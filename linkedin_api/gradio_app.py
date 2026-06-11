@@ -10,10 +10,15 @@ import html
 import json
 import logging
 import os
+import queue
+import re
 import tempfile
+import threading
 import time
+from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypeVar
 
 import dotenv
 
@@ -812,7 +817,56 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 PIPELINE_HINT_TEXT = "Click Get latest news report to refresh data and get a summary."
 MIN_PROGRESS_VISIBILITY_SECONDS = 0.6
+# Scalingo frontal servers drop idle WebSocket connections after ~30s; keepalive
+# yields must arrive more often during long enrich/report steps.
+WS_KEEPALIVE_SECONDS = 20.0
 PERIOD_SYNTAX = "e.g. 1d, 7d, 14d, 30d, 1w, 2w, 1m"
+
+_T = TypeVar("_T")
+
+
+def _stream_with_keepalive(
+    iterator: Iterator[_T],
+    keepalive: Callable[[], _T],
+    *,
+    interval: float = WS_KEEPALIVE_SECONDS,
+) -> Iterator[_T]:
+    """Yield from *iterator*; emit *keepalive()* if no item arrives within *interval*."""
+    q: queue.Queue = queue.Queue()
+    sentinel = object()
+
+    def feed() -> None:
+        try:
+            for item in iterator:
+                q.put(item)
+        except Exception as e:
+            q.put(e)
+        finally:
+            q.put(sentinel)
+
+    threading.Thread(target=feed, daemon=True).start()
+    while True:
+        try:
+            item = q.get(timeout=interval)
+        except queue.Empty:
+            yield keepalive()
+            continue
+        if item is sentinel:
+            break
+        if isinstance(item, Exception):
+            raise item
+        yield item
+
+
+def _normalize_report_markdown(report: str) -> str:
+    """Prepare LLM report text for Gradio Markdown (strip fences, ensure non-empty)."""
+    text = (report or "").strip()
+    if not text:
+        return "_Report was empty. Try again or check Scalingo logs._"
+    fence = re.match(r"^```(?:markdown|md)?\s*\n(.*)\n```\s*$", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    return text or "_Report was empty. Try again or check Scalingo logs._"
 
 
 def _render_pipeline_status(
@@ -1260,7 +1314,7 @@ def create_pipeline_interface():
         def prepare_run(cache):
             return (
                 _render_pipeline_status("fetching…", (0, 0.0)),
-                gr.update(),
+                gr.update(value="_Running pipeline… report will appear when ready._"),
                 cache,
                 gr.update(interactive=False),
                 gr.update(),
@@ -1308,13 +1362,26 @@ def create_pipeline_interface():
 
             stage_progress: tuple[int, float] = (0, 0.0)
             step_label = "fetching…"
+
+            def _pipeline_keepalive_outputs():
+                return (
+                    _render_pipeline_status(step_label, stage_progress),
+                    gr.update(),
+                    cache,
+                    gr.update(interactive=False),
+                    gr.update(),
+                )
+
             try:
-                for chunk in run_pipeline_ui_streaming(
+                pipeline = run_pipeline_ui_streaming(
                     last=last_clean,
                     from_cache=from_cache,
                     limit=lim_int,
                     summary_provider=sum_prov or None,
                     summary_model=sum_mod or None,
+                )
+                for chunk in _stream_with_keepalive(
+                    pipeline, _pipeline_keepalive_outputs
                 ):
                     last = chunk.strip().split("\n")[-1] if chunk.strip() else ""
                     status_update = _status_from_pipeline_line(last)
@@ -1333,9 +1400,7 @@ def create_pipeline_interface():
                             interactive=True
                         ), gr.update()
                         return
-                    yield _render_pipeline_status(
-                        step_label, stage_progress
-                    ), gr.update(), cache, gr.update(interactive=False), gr.update()
+                    yield _pipeline_keepalive_outputs()
             except Exception as e:
                 logger.exception("Pipeline failed")
                 err_msg = str(e)[:200]
@@ -1348,9 +1413,13 @@ def create_pipeline_interface():
                 return
 
             stage_progress, step_label = (4, 0.0), "preparing report…"
-            yield _render_pipeline_status(
-                step_label, stage_progress
-            ), gr.update(), cache, gr.update(interactive=False), gr.update()
+            yield (
+                _render_pipeline_status(step_label, stage_progress),
+                gr.update(value="_Generating report…_"),
+                cache,
+                gr.update(interactive=False),
+                gr.update(),
+            )
             report_mode_val = mode or REPORT_MODE_PER_CATEGORY
             content_level_val = content_lvl or CONTENT_LEVEL_SUMMARY
             try:
@@ -1415,28 +1484,69 @@ def create_pipeline_interface():
                 result = cache[0]
                 logger.info("Report cache hit (session)")
             else:
-                try:
-                    result = generate_activity_report(
-                        report_mode=report_mode_val,
-                        content_level=content_level_val,
-                        max_posts=max_posts_int,
-                        max_full_post_chars=max_full_chars_int,
-                        report_provider=rep_prov or None,
-                        report_model=rep_mod or None,
-                        period=last_clean,
-                        activities_csv_path=get_default_csv_path(),
+                report_q: queue.Queue = queue.Queue()
+                sentinel = object()
+
+                def _generate_report_worker() -> None:
+                    try:
+                        report_q.put(
+                            generate_activity_report(
+                                report_mode=report_mode_val,
+                                content_level=content_level_val,
+                                max_posts=max_posts_int,
+                                max_full_post_chars=max_full_chars_int,
+                                report_provider=rep_prov or None,
+                                report_model=rep_mod or None,
+                                period=last_clean,
+                                activities_csv_path=get_default_csv_path(),
+                            )
+                        )
+                    except Exception as e:
+                        report_q.put(e)
+                    finally:
+                        report_q.put(sentinel)
+
+                threading.Thread(target=_generate_report_worker, daemon=True).start()
+                report_item = None
+                while report_item is None:
+                    try:
+                        item = report_q.get(timeout=WS_KEEPALIVE_SECONDS)
+                    except queue.Empty:
+                        logger.info("Report generation still in progress…")
+                        yield (
+                            _render_pipeline_status("preparing report…", (4, 0.5)),
+                            gr.update(value="_Generating report…_"),
+                            cache,
+                            gr.update(interactive=False),
+                            gr.update(),
+                        )
+                        continue
+                    if item is sentinel:
+                        break
+                    report_item = item
+                if report_item is None:
+                    result = "⚠️ Report generation ended unexpectedly."
+                    cache = None
+                elif isinstance(report_item, Exception):
+                    logger.error(
+                        "Report generation failed: %s", report_item, exc_info=True
                     )
+                    result = _report_error_message(report_item)
+                    cache = None
+                else:
+                    result = report_item
                     cache = (result, sig) if sig else None
                     if sig is not None:
                         _save_report_cache(result, sig)
-                except Exception as e:
-                    logger.exception("Report generation failed")
-                    result = _report_error_message(e)
-                    cache = None
             prompt_content = _load_report_prompt_debug(cache[1] if cache else None)
-            yield _render_pipeline_status(None, None), result, cache, gr.update(
-                interactive=True
-            ), prompt_content
+            display_result = _normalize_report_markdown(result)
+            yield (
+                _render_pipeline_status(None, None),
+                gr.update(value=display_result),
+                cache,
+                gr.update(interactive=True),
+                prompt_content,
+            )
 
         run_btn.click(
             fn=prepare_run,
@@ -1575,6 +1685,7 @@ def main():
         os.getenv("EMBEDDING_PROVIDER", "<unset>"),
     )
     logger.info(f"Starting Gradio app on {host}:{port}")
+    demo.queue(default_concurrency_limit=1)
     demo.launch(server_name=host, server_port=port, share=False, show_error=True)
 
 
