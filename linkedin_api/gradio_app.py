@@ -858,15 +858,32 @@ def _stream_with_keepalive(
         yield item
 
 
+_ANGLE_BRACKET_URL_RE = re.compile(r"<(https?://[^>\s]+)>")
+
+
 def _normalize_report_markdown(report: str) -> str:
-    """Prepare LLM report text for Gradio Markdown (strip fences, ensure non-empty)."""
+    """Prepare LLM report text for Gradio Markdown (strip fences, ensure non-empty).
+
+    Angle-bracket autolinks (``<https://…>``) and stray ``<`` confuse Gradio's HTML
+    sanitizer after markdown→HTML conversion, which can blank the report panel even
+    when the run succeeded server-side.
+    """
     text = (report or "").strip()
     if not text:
         return "_Report was empty. Try again or check Scalingo logs._"
     fence = re.match(r"^```(?:markdown|md)?\s*\n(.*)\n```\s*$", text, re.DOTALL)
     if fence:
         text = fence.group(1).strip()
-    return text or "_Report was empty. Try again or check Scalingo logs._"
+    if not text:
+        return "_Report was empty. Try again or check Scalingo logs._"
+    lower = text.lower()
+    if lower.startswith("<!doctype") or lower.startswith("<html"):
+        return (
+            "_Report looked like an HTML error page, not markdown. "
+            "Check Scalingo logs or try again._"
+        )
+    text = _ANGLE_BRACKET_URL_RE.sub(r"[\1](\1)", text)
+    return text
 
 
 def _render_pipeline_status(
@@ -1291,6 +1308,8 @@ def create_pipeline_interface():
             value="Report will appear here after the pipeline run.",
             label="Report",
             elem_id="report-output",
+            # Self-generated LLM output; default sanitizer strips <https://…> autolinks.
+            sanitize_html=False,
         )
         with gr.Accordion("Debug: Last report prompt", open=False):
             prompt_debug_btn = gr.Button("View last prompt", size="sm")
@@ -1538,14 +1557,15 @@ def create_pipeline_interface():
                     cache = (result, sig) if sig else None
                     if sig is not None:
                         _save_report_cache(result, sig)
-            prompt_content = _load_report_prompt_debug(cache[1] if cache else None)
             display_result = _normalize_report_markdown(result)
+            # Do not push the full prompt debug in the final WS message (can be huge);
+            # user loads it on demand via "View last prompt".
             yield (
                 _render_pipeline_status(None, None),
-                gr.update(value=display_result),
+                display_result,
                 cache,
                 gr.update(interactive=True),
-                prompt_content,
+                gr.update(),
             )
 
         run_btn.click(
