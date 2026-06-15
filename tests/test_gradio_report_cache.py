@@ -3,7 +3,7 @@
 import json
 import pytest
 
-from linkedin_api.gradio_app import (
+from linkedin_api.pipeline_report import (
     CONTENT_LEVEL_MINIMAL,
     CONTENT_LEVEL_SUMMARY,
     REPORT_MODE_SINGLE_PASS,

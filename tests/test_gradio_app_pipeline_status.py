@@ -1,12 +1,14 @@
-"""Unit tests for pipeline progress rendering in gradio_app."""
+"""Unit tests for pipeline progress rendering in gradio_pipeline_ui."""
 
-from linkedin_api.gradio_app import (
+from linkedin_api.gradio_pipeline_ui import (
     PIPELINE_HINT_TEXT,
+    _render_pipeline_status,
+    _status_from_pipeline_line,
+)
+from linkedin_api.pipeline_report import (
     REPORT_MODE_CHOICES,
     REPORT_MODE_PER_CATEGORY,
     REPORT_MODE_SINGLE_PASS,
-    _render_pipeline_status,
-    _status_from_pipeline_line,
 )
 
 

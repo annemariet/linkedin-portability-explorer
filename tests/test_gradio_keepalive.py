@@ -4,15 +4,19 @@ import time
 
 import pytest
 
-from linkedin_api.gradio_app import (
+from linkedin_api.gradio_keepalive import (
     KEEPALIVE_TICK,
+    _stream_with_keepalive,
+    normalize_report_markdown,
+)
+from linkedin_api.pipeline_report import (
     PipelineCancelledError,
     _check_run_cancelled,
     _is_llm_timeout_error,
-    _normalize_report_markdown,
     _report_error_message,
-    _stream_with_keepalive,
 )
+
+_normalize_report_markdown = normalize_report_markdown
 
 
 def test_normalize_report_markdown_strips_fences():
