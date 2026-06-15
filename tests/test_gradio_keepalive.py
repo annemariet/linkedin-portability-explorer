@@ -2,8 +2,12 @@
 
 import time
 
+import pytest
+
 from linkedin_api.gradio_app import (
     KEEPALIVE_TICK,
+    PipelineCancelledError,
+    _check_run_cancelled,
     _is_llm_timeout_error,
     _normalize_report_markdown,
     _report_error_message,
@@ -41,6 +45,17 @@ def test_report_error_message_524():
     msg = _report_error_message(Exception("Error code: 524"))
     assert "524" in msg or "timed out" in msg.lower()
     assert "Skip fetch" in msg
+
+
+def test_check_run_cancelled_raises():
+    with pytest.raises(PipelineCancelledError):
+        _check_run_cancelled(lambda: True)
+    _check_run_cancelled(lambda: False)
+    _check_run_cancelled(None)
+
+
+def test_report_error_message_cancelled():
+    assert "stopped" in _report_error_message(PipelineCancelledError()).lower()
 
     def fast():
         yield "only"

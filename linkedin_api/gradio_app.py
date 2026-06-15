@@ -112,6 +112,11 @@ CONTENT_LEVEL_CHOICES = [
 ]
 
 ReportSignature = tuple[str, int, tuple[str, ...], str, str, int, int, str]
+RunControl = dict[str, bool]
+
+
+class PipelineCancelledError(Exception):
+    """User clicked Stop in the Gradio pipeline UI."""
 
 
 def _default_max_posts(content_level: str) -> int:
@@ -401,6 +406,7 @@ def _generate_single_pass_report(
     period_dates: str | None = None,
     sig: ReportSignature | None = None,
     progress_callback: Callable[[str, float], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> str:
     """Single-pass report via one LLM call per section (batched), not one monolithic call."""
     by_category: dict[str, list[dict]] = {}
@@ -440,6 +446,7 @@ def _generate_single_pass_report(
             continue
         label = CATEGORY_LABELS.get(cat, cat.replace("_", " ").title())
         if cat == "other":
+            _check_run_cancelled(should_cancel)
             parts.append(
                 f"## {label}\n\n"
                 f"{_format_other_section(category_metas, content_level, max_full_post_chars)}"
@@ -457,6 +464,7 @@ def _generate_single_pass_report(
         )
         section_parts: list[str] = []
         for batch in batches:
+            _check_run_cancelled(should_cancel)
             batch_idx += 1
             if progress_callback and total_batches:
                 progress_callback(
@@ -806,6 +814,11 @@ def _save_report_cache(report: str, sig: ReportSignature) -> None:
         pass
 
 
+def _check_run_cancelled(should_cancel: Callable[[], bool] | None) -> None:
+    if should_cancel and should_cancel():
+        raise PipelineCancelledError()
+
+
 def generate_activity_report(
     report_mode: str = REPORT_MODE_PER_CATEGORY,
     content_level: str = CONTENT_LEVEL_SUMMARY,
@@ -816,6 +829,7 @@ def generate_activity_report(
     period: str = "7d",
     activities_csv_path: Path | None = None,
     progress_callback: Callable[[str, float], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> str:
     """Build report. Per-category: batches per category; 'other' is summaries+links.
     Single-pass: one LLM call per section (batched). Content: Minimal, Summary, or Full.
@@ -850,7 +864,10 @@ def generate_activity_report(
                 period_dates=period_dates,
                 sig=sig,
                 progress_callback=progress_callback,
+                should_cancel=should_cancel,
             )
+        except PipelineCancelledError:
+            raise
         except Exception as e:
             logger.exception("Single-pass report failed")
             return _report_error_message(e)
@@ -877,6 +894,7 @@ def generate_activity_report(
                 continue
             cat_idx += 1
             label = CATEGORY_LABELS.get(cat, cat.replace("_", " ").title())
+            _check_run_cancelled(should_cancel)
             if progress_callback and active_cats:
                 progress_callback(f"report: {label}", cat_idx / len(active_cats))
             if cat == "other":
@@ -890,18 +908,20 @@ def generate_activity_report(
                 content_level,
                 max_full_post_chars,
             )
-            batch_summaries = [
-                _summarize_batch(
-                    llm,
-                    batch,
-                    label,
-                    content_level,
-                    max_full_post_chars=max_full_post_chars,
-                    prompts_out=prompts_collected,
-                    period_dates=period_dates,
+            batch_summaries: list[str] = []
+            for batch in batches:
+                _check_run_cancelled(should_cancel)
+                batch_summaries.append(
+                    _summarize_batch(
+                        llm,
+                        batch,
+                        label,
+                        content_level,
+                        max_full_post_chars=max_full_post_chars,
+                        prompts_out=prompts_collected,
+                        period_dates=period_dates,
+                    )
                 )
-                for batch in batches
-            ]
             parts.append(f"## {label}\n\n" + "\n\n".join(batch_summaries))
         if prompts_collected and sig is not None:
             _save_report_prompt_debug(
@@ -910,6 +930,8 @@ def generate_activity_report(
         if not parts:
             return "No posts to summarize."
         return "\n\n".join(parts)
+    except PipelineCancelledError:
+        raise
     except Exception as e:
         logger.exception("Report generation failed")
         return _report_error_message(e)
@@ -917,6 +939,8 @@ def generate_activity_report(
 
 def _report_error_message(e: Exception) -> str:
     """Turn an exception into a short, UI-safe message (no HTML)."""
+    if isinstance(e, PipelineCancelledError):
+        return "_Run stopped._"
     msg = str(e)
     if _is_llm_timeout_error(e):
         return (
@@ -1421,7 +1445,10 @@ def create_pipeline_interface():
                 inputs=[report_provider],
                 outputs=[report_model],
             )
-        run_btn = gr.Button("Get latest news report", variant="primary")
+        run_ctrl = gr.State({"cancel": False})
+        with gr.Row():
+            run_btn = gr.Button("Get latest news report", variant="primary")
+            stop_btn = gr.Button("Stop", variant="stop", interactive=False)
         pipeline_status = gr.HTML(
             value=_render_pipeline_status(), elem_id="pipeline-status"
         )
@@ -1451,14 +1478,46 @@ def create_pipeline_interface():
             outputs=[prompt_debug_output],
         )
 
-        def prepare_run(cache):
+        def _pipeline_run_outputs(
+            status_html: str,
+            report,
+            cache_val,
+            *,
+            running: bool,
+            prompt_debug=gr.update(),
+        ):
             return (
+                status_html,
+                report,
+                cache_val,
+                gr.update(interactive=not running),
+                gr.update(interactive=running),
+                prompt_debug,
+            )
+
+        def _stopped_run_outputs(cache_val):
+            return _pipeline_run_outputs(
+                _render_pipeline_status("Stopped.", (4, 1.0)),
+                gr.update(
+                    value="_Run stopped. Change model/settings above, then run again._"
+                ),
+                cache_val,
+                running=False,
+            )
+
+        def prepare_run(cache, ctrl: RunControl):
+            ctrl["cancel"] = False
+            return _pipeline_run_outputs(
                 _render_pipeline_status("fetching…", (0, 0.0)),
                 gr.update(value="_Running pipeline… report will appear when ready._"),
                 cache,
-                gr.update(interactive=False),
-                gr.update(),
+                running=True,
             )
+
+        def stop_run(ctrl: RunControl):
+            ctrl["cancel"] = True
+            logger.info("Pipeline stop requested")
+            return ctrl
 
         def run_all(
             last: str,
@@ -1473,6 +1532,7 @@ def create_pipeline_interface():
             rep_prov,
             rep_mod,
             cache,
+            ctrl: RunControl,
         ):
             logger.info(
                 "Pipeline & report started: last=%s from_cache=%s limit=%s",
@@ -1483,9 +1543,12 @@ def create_pipeline_interface():
             last_clean = (last or "").strip()
             if _parse_last(last_clean) is None:
                 err = f"Invalid period '{last}'. {PERIOD_SYNTAX}"
-                yield _render_pipeline_status(
-                    "Invalid period", (0, 0.0)
-                ), err, cache, gr.update(interactive=True), gr.update()
+                yield _pipeline_run_outputs(
+                    _render_pipeline_status("Invalid period", (0, 0.0)),
+                    err,
+                    cache,
+                    running=False,
+                )
                 return
             started_at = time.monotonic()
 
@@ -1504,13 +1567,18 @@ def create_pipeline_interface():
             step_label = "fetching…"
 
             def _pipeline_keepalive_outputs():
-                return (
+                return _pipeline_run_outputs(
                     _render_pipeline_status(step_label, stage_progress),
                     gr.update(),
                     cache,
-                    gr.update(interactive=False),
-                    gr.update(),
+                    running=True,
                 )
+
+            def _check_user_stop() -> bool:
+                if ctrl.get("cancel"):
+                    logger.info("Pipeline run cancelled by user")
+                    return True
+                return False
 
             try:
                 pipeline = run_pipeline_ui_streaming(
@@ -1522,6 +1590,9 @@ def create_pipeline_interface():
                 )
                 for chunk in _stream_with_keepalive(pipeline, lambda: KEEPALIVE_TICK):
                     if chunk is KEEPALIVE_TICK:
+                        if _check_user_stop():
+                            yield _stopped_run_outputs(cache)
+                            return
                         yield _pipeline_keepalive_outputs()
                         continue
                     last = chunk.strip().split("\n")[-1] if chunk.strip() else ""
@@ -1535,31 +1606,39 @@ def create_pipeline_interface():
                         if not error_text:
                             error_text = "Pipeline failed."
                         _ensure_min_progress_visibility()
-                        yield _render_pipeline_status(
-                            step_label, stage_progress
-                        ), f"⚠️ {error_text}", cache, gr.update(
-                            interactive=True
-                        ), gr.update()
+                        yield _pipeline_run_outputs(
+                            _render_pipeline_status(step_label, stage_progress),
+                            f"⚠️ {error_text}",
+                            cache,
+                            running=False,
+                        )
+                        return
+                    if _check_user_stop():
+                        yield _stopped_run_outputs(cache)
                         return
                     yield _pipeline_keepalive_outputs()
             except Exception as e:
                 logger.exception("Pipeline failed")
                 err_msg = str(e)[:200]
                 _ensure_min_progress_visibility()
-                yield _render_pipeline_status(
-                    "Failed.", (4, 1.0)
-                ), f"⚠️ Pipeline failed: {err_msg}", cache, gr.update(
-                    interactive=True
-                ), gr.update()
+                yield _pipeline_run_outputs(
+                    _render_pipeline_status("Failed.", (4, 1.0)),
+                    f"⚠️ Pipeline failed: {err_msg}",
+                    cache,
+                    running=False,
+                )
+                return
+
+            if _check_user_stop():
+                yield _stopped_run_outputs(cache)
                 return
 
             stage_progress, step_label = (4, 0.0), "preparing report…"
-            yield (
+            yield _pipeline_run_outputs(
                 _render_pipeline_status(step_label, stage_progress),
                 gr.update(value="_Generating report…_"),
                 cache,
-                gr.update(interactive=False),
-                gr.update(),
+                running=True,
             )
             report_mode_val = mode or REPORT_MODE_PER_CATEGORY
             content_level_val = content_lvl or CONTENT_LEVEL_SUMMARY
@@ -1635,6 +1714,8 @@ def create_pipeline_interface():
                 def _on_report_progress(label: str, frac: float) -> None:
                     report_progress["label"] = label
                     report_progress["frac"] = max(0.0, min(1.0, frac))
+                    if ctrl.get("cancel"):
+                        raise PipelineCancelledError()
 
                 def _generate_report_worker() -> None:
                     try:
@@ -1649,8 +1730,11 @@ def create_pipeline_interface():
                                 period=last_clean,
                                 activities_csv_path=get_default_csv_path(),
                                 progress_callback=_on_report_progress,
+                                should_cancel=lambda: bool(ctrl.get("cancel")),
                             )
                         )
+                    except PipelineCancelledError as e:
+                        report_q.put(e)
                     except Exception as e:
                         report_q.put(e)
                     finally:
@@ -1662,15 +1746,17 @@ def create_pipeline_interface():
                     try:
                         item = report_q.get(timeout=WS_KEEPALIVE_SECONDS)
                     except queue.Empty:
+                        if _check_user_stop():
+                            yield _stopped_run_outputs(cache)
+                            return
                         rp_label = str(report_progress["label"])
                         rp_frac = float(report_progress.get("frac", 0.0))
                         logger.info("Report generation: %s", rp_label)
-                        yield (
+                        yield _pipeline_run_outputs(
                             _render_pipeline_status(rp_label, (4, rp_frac)),
                             gr.update(value="_Generating report…_"),
                             cache,
-                            gr.update(interactive=False),
-                            gr.update(),
+                            running=True,
                         )
                         continue
                     if item is sentinel:
@@ -1679,6 +1765,9 @@ def create_pipeline_interface():
                 if report_item is None:
                     result = "⚠️ Report generation ended unexpectedly."
                     cache = None
+                elif isinstance(report_item, PipelineCancelledError):
+                    yield _stopped_run_outputs(cache)
+                    return
                 elif isinstance(report_item, Exception):
                     logger.error(
                         "Report generation failed: %s", report_item, exc_info=True
@@ -1691,24 +1780,22 @@ def create_pipeline_interface():
                     if sig is not None:
                         _save_report_cache(result, sig)
             display_result = _normalize_report_markdown(result)
-            # Do not push the full prompt debug in the final WS message (can be huge);
-            # user loads it on demand via "View last prompt".
-            yield (
+            yield _pipeline_run_outputs(
                 _render_pipeline_status(None, None),
                 display_result,
                 cache,
-                gr.update(interactive=True),
-                gr.update(),
+                running=False,
             )
 
-        run_btn.click(
+        run_event = run_btn.click(
             fn=prepare_run,
-            inputs=[report_cache_state],
+            inputs=[report_cache_state, run_ctrl],
             outputs=[
                 pipeline_status,
                 report_output,
                 report_cache_state,
                 run_btn,
+                stop_btn,
                 prompt_debug_output,
             ],
             queue=False,
@@ -1727,15 +1814,24 @@ def create_pipeline_interface():
                 report_provider,
                 report_model,
                 report_cache_state,
+                run_ctrl,
             ],
             outputs=[
                 pipeline_status,
                 report_output,
                 report_cache_state,
                 run_btn,
+                stop_btn,
                 prompt_debug_output,
             ],
             show_progress="hidden",
+        )
+        stop_btn.click(
+            fn=stop_run,
+            inputs=[run_ctrl],
+            outputs=[run_ctrl],
+            cancels=[run_event],
+            queue=False,
         )
     return block
 
