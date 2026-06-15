@@ -18,12 +18,11 @@ import time
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 import dotenv
 
 dotenv.load_dotenv()
-from typing import TYPE_CHECKING
 
 import gradio as gr
 from neo4j import GraphDatabase
@@ -132,6 +131,20 @@ def _truncate(s: str, max_len: int) -> str:
     if len(s) <= max_len:
         return s
     return s[: max_len - 3].rstrip() + "..."
+
+
+def _llm_response_text(response) -> str:
+    return (response.content if hasattr(response, "content") else str(response)).strip()
+
+
+def _group_metas_by_category(metas: list[dict]) -> dict[str, list[dict]]:
+    by_category: dict[str, list[dict]] = {}
+    for m in metas:
+        cat = (m.get("category") or "").strip().lower() or "other"
+        if cat not in REPORT_CATEGORIES:
+            cat = "other"
+        by_category.setdefault(cat, []).append(m)
+    return by_category
 
 
 def _get_posts_for_period(
@@ -266,7 +279,7 @@ _BATCH_SYSTEM = (
 )
 
 
-def _summarize_batch(
+def _summarize_report_batch(
     llm,
     metas: list[dict],
     category_label: str,
@@ -284,7 +297,7 @@ def _summarize_batch(
     if prompts_out is not None:
         prompts_out.append(prompt)
     response = llm.invoke(prompt, system_instruction=_BATCH_SYSTEM)
-    return (response.content if hasattr(response, "content") else str(response)).strip()
+    return _llm_response_text(response)
 
 
 def _format_other_section(
@@ -297,61 +310,6 @@ def _format_other_section(
         _format_post_for_prompt(m, content_level, max_full_post_chars) for m in metas
     ]
     return "\n".join(lines) if lines else "_No posts in this category._"
-
-
-_SINGLE_PASS_SYSTEM = (
-    "You are a concise analyst. The user shares LinkedIn posts from a specific period. "
-    "Each post includes 'Activity: <date>' and 'Posted: <date>' (or 'unknown'), plus URL, category/tags, "
-    "and optionally summary or full content.\n\n"
-    """Produce a markdown report with:
-1. One section per category: Product announcements, Tutorials & how-to, Opinion & hot takes,
-   Papers & research, Experiments & benchmarks, Company & career news, Other. Put each post into the right category
-   based on content.
-2. For each section: bullet points with the most important news for the category, with inline **links**
-   to the relevant content as well as the source. See the example below for how links can be inserted.
-   A bullet point may group articles if they cite the same product/idea/technology/etc. or are closely related
-   (eg competing models, similar subdomains, etc).
-3. Cite the post as the source of the information, with the Author name if it's a person, otherwise it can be inlined
-   with the entity name making the announcement.
-4. Take temporality into account: if a post was published several weeks before the user reacted to it,
-   add a brief note that it is 'late news' and assess whether it is still relevant.
-   Posts are ordered by reaction time (earliest first).
-5. Output valid markdown only. No preamble.
-
-Example input (keeping only the links for brevity):
-**Posts**:
-- https://www.linkedin.com/feed/update/urn:li:ugcPost:7432397932697481216
-- https://www.linkedin.com/feed/update/urn:li:ugcPost:7432135776701693952
-- https://www.linkedin.com/feed/update/urn:li:activity:7430628329965137920
-- https://www.linkedin.com/feed/update/urn:li:activity:7427799631356473344
-- https://www.linkedin.com/feed/update/urn:li:activity:7432043070642290688
-- https://www.linkedin.com/feed/update/urn:li:activity:7432412067652943872
-
-Example output (showing only the Product Announcements section):
-The period saw several significant product launches and infrastructure releases.
-
-- **Data visualization**: It looks like there is a new player in town in the datavis world!
-  [Graphy](https://graphy.dev/) launched its Developer Platform as the first charting
-  infrastructure for AI-native products, targeting the growing need for data visualization in AI applications
-  ([from Andrey Vinitsky](https://www.linkedin.com/feed/update/urn:li:ugcPost:7432397932697481216)).
-- **Agentic coding**:
-    * [Cursor announced](https://www.linkedin.com/feed/update/urn:li:ugcPost:7432135776701693952/)
-      a major capability upgrade allowing agents to setup their own VM and control their own computers and send videos
-      of their work (get started [here](https://cursor.com/onboard)).
-    * [LightOn](https://lighton.ai/) [released](https://huggingface.co/blog/lightonai/colgrep-lateon-code) 2 new
-      LateOn-code models on HuggingFace, and ColGREP, a Rust-based multi-vector search tool for coding agents (from
-      [Tom Aarsen](https://www.linkedin.com/feed/update/urn:li:activity:7427799631356473344/)).
-- **Data and MCPs**: [data.gouv.fr](https://www.linkedin.com/feed/update/urn:li:activity:7432412067652943872/)
-  announced an experimental MCP server to make public datasets accessible to AI chatbots.
-  Check it out on Github: https://github.com/datagouv/datagouv-mcp.
-
-
-https://www.linkedin.com/feed/update/urn:li:activity:7432043070642290688/ should be either in the Company & career
-news or with Research news.
-https://www.linkedin.com/feed/update/urn:li:activity:7430628329965137920/ can be skipped because it's not not so
-relevant, an inference provider adding a new model must happen regularly.
-"""
-)
 
 
 _SINGLE_PASS_SECTION_SYSTEM = (
@@ -369,8 +327,8 @@ def _is_llm_timeout_error(exc: BaseException) -> bool:
     """True for proxy/origin timeouts (e.g. Cloudflare 524, gateway 504)."""
     msg = str(exc).lower()
     return (
-        "524" in str(exc)
-        or "504" in str(exc)
+        "524" in msg
+        or "504" in msg
         or "timeout" in msg
         or "gateway time-out" in msg
         or "origin_response_timeout" in msg
@@ -385,6 +343,7 @@ def _generate_single_pass_section(
     content_level: str,
     max_full_post_chars: int,
     period_dates: str | None,
+    prompts_out: list[str] | None = None,
 ) -> str:
     """One LLM call for a section batch (keeps each request under proxy timeouts)."""
     block = "\n\n".join(
@@ -392,9 +351,11 @@ def _generate_single_pass_section(
     )
     header = f"Period: {period_dates}\n\n" if period_dates else ""
     prompt = f"{header}Posts for '{section_label}' ({len(batch)}):\n\n{block}"
+    if prompts_out is not None:
+        prompts_out.append(prompt)
     system = _SINGLE_PASS_SECTION_SYSTEM.format(section=section_label)
     response = llm.invoke(prompt, system_instruction=system)
-    return (response.content if hasattr(response, "content") else str(response)).strip()
+    return _llm_response_text(response)
 
 
 def _generate_single_pass_report(
@@ -409,35 +370,30 @@ def _generate_single_pass_report(
     should_cancel: Callable[[], bool] | None = None,
 ) -> str:
     """Single-pass report via one LLM call per section (batched), not one monolithic call."""
-    by_category: dict[str, list[dict]] = {}
-    for m in metas:
-        cat = (m.get("category") or "").strip().lower() or "other"
-        if cat not in REPORT_CATEGORIES:
-            cat = "other"
-        by_category.setdefault(cat, []).append(m)
-
+    by_category = _group_metas_by_category(metas)
     llm = create_llm(
         stage="report",
         json_mode=False,
         provider_override=report_provider,
         model_override=report_model,
     )
+    cat_batches: dict[str, list[list[dict]]] = {}
+    for cat in REPORT_CATEGORIES:
+        category_metas = by_category.get(cat)
+        if not category_metas or cat == "other":
+            continue
+        cat_batches[cat] = _batches_by_char_limit(
+            category_metas,
+            REPORT_BATCH_CHAR_LIMIT,
+            content_level,
+            max_full_post_chars,
+        )
+    total_batches = sum(len(batches) for batches in cat_batches.values())
+    if by_category.get("other"):
+        total_batches += 1
+
     prompts_collected: list[str] = []
     parts: list[str] = []
-    active_cats = [c for c in REPORT_CATEGORIES if by_category.get(c)]
-    total_batches = 0
-    for cat in active_cats:
-        if cat == "other":
-            total_batches += 1
-        else:
-            total_batches += len(
-                _batches_by_char_limit(
-                    by_category[cat],
-                    REPORT_BATCH_CHAR_LIMIT,
-                    content_level,
-                    max_full_post_chars,
-                )
-            )
     batch_idx = 0
 
     for cat in REPORT_CATEGORIES:
@@ -456,14 +412,8 @@ def _generate_single_pass_report(
                 progress_callback(f"report: {label}", batch_idx / total_batches)
             continue
 
-        batches = _batches_by_char_limit(
-            category_metas,
-            REPORT_BATCH_CHAR_LIMIT,
-            content_level,
-            max_full_post_chars,
-        )
         section_parts: list[str] = []
-        for batch in batches:
+        for batch in cat_batches[cat]:
             _check_run_cancelled(should_cancel)
             batch_idx += 1
             if progress_callback and total_batches:
@@ -471,14 +421,6 @@ def _generate_single_pass_report(
                     f"report: {label} [{batch_idx}/{total_batches}]",
                     batch_idx / total_batches,
                 )
-            header = f"Period: {period_dates}\n\n" if period_dates else ""
-            block = "\n\n".join(
-                _format_post_for_prompt(m, content_level, max_full_post_chars)
-                for m in batch
-            )
-            prompts_collected.append(
-                f"{header}Posts for '{label}' ({len(batch)}):\n\n{block}"
-            )
             section_parts.append(
                 _generate_single_pass_section(
                     llm,
@@ -487,6 +429,7 @@ def _generate_single_pass_report(
                     content_level=content_level,
                     max_full_post_chars=max_full_post_chars,
                     period_dates=period_dates,
+                    prompts_out=prompts_collected,
                 )
             )
         parts.append(f"## {label}\n\n" + "\n\n".join(section_parts))
@@ -559,7 +502,7 @@ def _get_report_cache_max_entries() -> int:
 
 def _sig_to_key(sig: ReportSignature) -> dict:
     """Serialize signature to JSON-serializable dict for disk persistence."""
-    d = {
+    return {
         "model_id": sig[0],
         "n": sig[1],
         "summarized_at": list(sig[2]),
@@ -567,10 +510,8 @@ def _sig_to_key(sig: ReportSignature) -> dict:
         "content_level": sig[4],
         "max_posts": sig[5],
         "max_full_post_chars": sig[6],
+        "period": sig[7],
     }
-    if len(sig) > 7:
-        d["period"] = sig[7]
-    return d
 
 
 def _sig_to_cache_key(sig: ReportSignature) -> str:
@@ -580,7 +521,7 @@ def _sig_to_cache_key(sig: ReportSignature) -> str:
 
 def _key_matches(key: dict, sig: ReportSignature) -> bool:
     """True if key matches signature."""
-    base = (
+    return (
         key.get("model_id") == sig[0]
         and key.get("n") == sig[1]
         and tuple(key.get("summarized_at", [])) == sig[2]
@@ -588,10 +529,8 @@ def _key_matches(key: dict, sig: ReportSignature) -> bool:
         and key.get("content_level") == sig[4]
         and key.get("max_posts") == sig[5]
         and key.get("max_full_post_chars") == sig[6]
+        and key.get("period", "7d") == sig[7]
     )
-    if len(sig) > 7:
-        return base and key.get("period", "7d") == sig[7]
-    return base
 
 
 def _format_prompt_debug_content(mode: str, system: str, prompts: list[str]) -> str:
@@ -659,7 +598,7 @@ def _save_report_prompt_debug(
             "prompts": prompts,
             "hits": existing_hits,
         }
-        while len(prompts_dict) > max_entries:
+        if len(prompts_dict) > max_entries:
             loser = min(prompts_dict, key=lambda k: prompts_dict[k].get("hits", 0))
             del prompts_dict[loser]
         data["prompts"] = prompts_dict
@@ -804,7 +743,7 @@ def _save_report_cache(report: str, sig: ReportSignature) -> None:
         reports_dict = reports_dict or {}
         existing_hits = reports_dict.get(cache_key, {}).get("hits", 0)
         reports_dict[cache_key] = {"report": report, "hits": existing_hits}
-        while len(reports_dict) > max_entries:
+        if len(reports_dict) > max_entries:
             loser = min(reports_dict, key=lambda k: reports_dict[k].get("hits", 0))
             del reports_dict[loser]
         data["reports"] = reports_dict
@@ -866,17 +805,12 @@ def generate_activity_report(
                 progress_callback=progress_callback,
                 should_cancel=should_cancel,
             )
-        except PipelineCancelledError:
-            raise
         except Exception as e:
+            if isinstance(e, PipelineCancelledError):
+                raise
             logger.exception("Single-pass report failed")
             return _report_error_message(e)
-    by_category: dict[str, list[dict]] = {}
-    for m in metas:
-        cat = (m.get("category") or "").strip().lower() or "other"
-        if cat not in REPORT_CATEGORIES:
-            cat = "other"
-        by_category.setdefault(cat, []).append(m)
+    by_category = _group_metas_by_category(metas)
     try:
         llm = create_llm(
             stage="report",
@@ -912,7 +846,7 @@ def generate_activity_report(
             for batch in batches:
                 _check_run_cancelled(should_cancel)
                 batch_summaries.append(
-                    _summarize_batch(
+                    _summarize_report_batch(
                         llm,
                         batch,
                         label,
@@ -1484,8 +1418,10 @@ def create_pipeline_interface():
             cache_val,
             *,
             running: bool,
-            prompt_debug=gr.update(),
+            prompt_debug=None,
         ):
+            if prompt_debug is None:
+                prompt_debug = gr.update()
             return (
                 status_html,
                 report,
@@ -1684,23 +1620,11 @@ def create_pipeline_interface():
             )
             disk = _load_report_cache(sig) if sig else None
 
-            def _is_cache_valid(cached_sig: tuple) -> bool:
-                if cached_sig != sig:
-                    return False
-                if len(cached_sig) > 4 and cached_sig[4] != content_level_val:
-                    logger.info(
-                        "Cache invalid: content_level mismatch %r vs %r",
-                        cached_sig[4],
-                        content_level_val,
-                    )
-                    return False
-                return True
-
-            if disk is not None and _is_cache_valid(disk[1]):
+            if disk is not None and disk[1] == sig:
                 result = disk[0]
                 logger.info("Report cache hit (disk)")
                 cache = (result, sig)
-            elif cache is not None and _is_cache_valid(cache[1]):
+            elif cache is not None and cache[1] == sig:
                 result = cache[0]
                 logger.info("Report cache hit (session)")
             else:
@@ -1714,8 +1638,6 @@ def create_pipeline_interface():
                 def _on_report_progress(label: str, frac: float) -> None:
                     report_progress["label"] = label
                     report_progress["frac"] = max(0.0, min(1.0, frac))
-                    if ctrl.get("cancel"):
-                        raise PipelineCancelledError()
 
                 def _generate_report_worker() -> None:
                     try:

@@ -57,6 +57,8 @@ def test_check_run_cancelled_raises():
 def test_report_error_message_cancelled():
     assert "stopped" in _report_error_message(PipelineCancelledError()).lower()
 
+
+def test_stream_with_keepalive_fast():
     def fast():
         yield "only"
 
@@ -65,6 +67,11 @@ def test_report_error_message_cancelled():
 
     out = list(_stream_with_keepalive(fast(), keepalive, interval=0.05))
     assert out == ["only"]
+
+
+def test_stream_with_keepalive_slow():
+    def keepalive():
+        return KEEPALIVE_TICK
 
     def very_slow():
         time.sleep(0.08)
