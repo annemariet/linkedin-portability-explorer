@@ -4,7 +4,9 @@ import time
 
 from linkedin_api.gradio_app import (
     KEEPALIVE_TICK,
+    _is_llm_timeout_error,
     _normalize_report_markdown,
+    _report_error_message,
     _stream_with_keepalive,
 )
 
@@ -31,7 +33,15 @@ def test_normalize_report_markdown_rejects_html_error_page():
     assert "error page" in _normalize_report_markdown(raw).lower()
 
 
-def test_stream_with_keepalive_emits_during_stall():
+def test_is_llm_timeout_error_detects_524():
+    assert _is_llm_timeout_error(Exception("Error code: 524 - timeout"))
+
+
+def test_report_error_message_524():
+    msg = _report_error_message(Exception("Error code: 524"))
+    assert "524" in msg or "timed out" in msg.lower()
+    assert "Skip fetch" in msg
+
     def fast():
         yield "only"
 

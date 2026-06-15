@@ -349,6 +349,49 @@ relevant, an inference provider adding a new model must happen regularly.
 )
 
 
+_SINGLE_PASS_SECTION_SYSTEM = (
+    "You are a concise analyst. The user shares LinkedIn posts from a specific period. "
+    "Each post includes 'Activity: <date>' and 'Posted: <date>' (or 'unknown'), plus URL, "
+    "category/tags, and optionally summary or full content.\n\n"
+    "Produce markdown for ONLY the **{section}** section of a LinkedIn news digest. "
+    "Use bullet points with inline **links** to sources. Group related posts when appropriate. "
+    "Take temporality into account (late news). Output valid markdown only — no section heading, "
+    "no preamble."
+)
+
+
+def _is_llm_timeout_error(exc: BaseException) -> bool:
+    """True for proxy/origin timeouts (e.g. Cloudflare 524, gateway 504)."""
+    msg = str(exc).lower()
+    return (
+        "524" in str(exc)
+        or "504" in str(exc)
+        or "timeout" in msg
+        or "gateway time-out" in msg
+        or "origin_response_timeout" in msg
+    )
+
+
+def _generate_single_pass_section(
+    llm,
+    *,
+    section_label: str,
+    batch: list[dict],
+    content_level: str,
+    max_full_post_chars: int,
+    period_dates: str | None,
+) -> str:
+    """One LLM call for a section batch (keeps each request under proxy timeouts)."""
+    block = "\n\n".join(
+        _format_post_for_prompt(m, content_level, max_full_post_chars) for m in batch
+    )
+    header = f"Period: {period_dates}\n\n" if period_dates else ""
+    prompt = f"{header}Posts for '{section_label}' ({len(batch)}):\n\n{block}"
+    system = _SINGLE_PASS_SECTION_SYSTEM.format(section=section_label)
+    response = llm.invoke(prompt, system_instruction=system)
+    return (response.content if hasattr(response, "content") else str(response)).strip()
+
+
 def _generate_single_pass_report(
     metas: list[dict],
     content_level: str = CONTENT_LEVEL_SUMMARY,
@@ -357,23 +400,100 @@ def _generate_single_pass_report(
     report_model: str | None = None,
     period_dates: str | None = None,
     sig: ReportSignature | None = None,
+    progress_callback: Callable[[str, float], None] | None = None,
 ) -> str:
-    """One LLM call: all posts with links; prompt asks for categorized report with links to key items."""
-    blocks = "\n\n".join(
-        _format_post_for_prompt(m, content_level, max_full_post_chars) for m in metas
-    )
-    header = f"Period: {period_dates}\n\n" if period_dates else ""
-    prompt = f"{header}Posts ({len(metas)} total):\n\n{blocks}"
-    if sig is not None:
-        _save_report_prompt_debug("single-pass", _SINGLE_PASS_SYSTEM, [prompt], sig)
+    """Single-pass report via one LLM call per section (batched), not one monolithic call."""
+    by_category: dict[str, list[dict]] = {}
+    for m in metas:
+        cat = (m.get("category") or "").strip().lower() or "other"
+        if cat not in REPORT_CATEGORIES:
+            cat = "other"
+        by_category.setdefault(cat, []).append(m)
+
     llm = create_llm(
         stage="report",
         json_mode=False,
         provider_override=report_provider,
         model_override=report_model,
     )
-    response = llm.invoke(prompt, system_instruction=_SINGLE_PASS_SYSTEM)
-    return (response.content if hasattr(response, "content") else str(response)).strip()
+    prompts_collected: list[str] = []
+    parts: list[str] = []
+    active_cats = [c for c in REPORT_CATEGORIES if by_category.get(c)]
+    total_batches = 0
+    for cat in active_cats:
+        if cat == "other":
+            total_batches += 1
+        else:
+            total_batches += len(
+                _batches_by_char_limit(
+                    by_category[cat],
+                    REPORT_BATCH_CHAR_LIMIT,
+                    content_level,
+                    max_full_post_chars,
+                )
+            )
+    batch_idx = 0
+
+    for cat in REPORT_CATEGORIES:
+        category_metas = by_category.get(cat)
+        if not category_metas:
+            continue
+        label = CATEGORY_LABELS.get(cat, cat.replace("_", " ").title())
+        if cat == "other":
+            parts.append(
+                f"## {label}\n\n"
+                f"{_format_other_section(category_metas, content_level, max_full_post_chars)}"
+            )
+            batch_idx += 1
+            if progress_callback and total_batches:
+                progress_callback(f"report: {label}", batch_idx / total_batches)
+            continue
+
+        batches = _batches_by_char_limit(
+            category_metas,
+            REPORT_BATCH_CHAR_LIMIT,
+            content_level,
+            max_full_post_chars,
+        )
+        section_parts: list[str] = []
+        for batch in batches:
+            batch_idx += 1
+            if progress_callback and total_batches:
+                progress_callback(
+                    f"report: {label} [{batch_idx}/{total_batches}]",
+                    batch_idx / total_batches,
+                )
+            header = f"Period: {period_dates}\n\n" if period_dates else ""
+            block = "\n\n".join(
+                _format_post_for_prompt(m, content_level, max_full_post_chars)
+                for m in batch
+            )
+            prompts_collected.append(
+                f"{header}Posts for '{label}' ({len(batch)}):\n\n{block}"
+            )
+            section_parts.append(
+                _generate_single_pass_section(
+                    llm,
+                    section_label=label,
+                    batch=batch,
+                    content_level=content_level,
+                    max_full_post_chars=max_full_post_chars,
+                    period_dates=period_dates,
+                )
+            )
+        parts.append(f"## {label}\n\n" + "\n\n".join(section_parts))
+
+    if sig is not None and prompts_collected:
+        _save_report_prompt_debug(
+            "single-pass-sections",
+            _SINGLE_PASS_SECTION_SYSTEM,
+            prompts_collected,
+            sig,
+        )
+    if not parts:
+        return "No posts to summarize."
+    intro = f"_Period: {period_dates}_\n\n" if period_dates else ""
+    return intro + "\n\n".join(parts)
 
 
 def _resolve_max_posts(max_posts: int | None, content_level: str) -> int:
@@ -695,9 +815,10 @@ def generate_activity_report(
     report_model: str | None = None,
     period: str = "7d",
     activities_csv_path: Path | None = None,
+    progress_callback: Callable[[str, float], None] | None = None,
 ) -> str:
     """Build report. Per-category: batches per category; 'other' is summaries+links.
-    Single-pass: one LLM call with all links. Content: Minimal, Summary, or Full.
+    Single-pass: one LLM call per section (batched). Content: Minimal, Summary, or Full.
     When period is set, scopes to posts with activity rows in that period in activities.csv.
     """
     setup_gcp_credentials()
@@ -728,6 +849,7 @@ def generate_activity_report(
                 report_model=report_model,
                 period_dates=period_dates,
                 sig=sig,
+                progress_callback=progress_callback,
             )
         except Exception as e:
             logger.exception("Single-pass report failed")
@@ -747,11 +869,16 @@ def generate_activity_report(
         )
         parts = []
         prompts_collected: list[str] = []
+        active_cats = [c for c in REPORT_CATEGORIES if by_category.get(c)]
+        cat_idx = 0
         for cat in REPORT_CATEGORIES:
             category_metas = by_category.get(cat)
             if not category_metas:
                 continue
+            cat_idx += 1
             label = CATEGORY_LABELS.get(cat, cat.replace("_", " ").title())
+            if progress_callback and active_cats:
+                progress_callback(f"report: {label}", cat_idx / len(active_cats))
             if cat == "other":
                 parts.append(
                     f"## {label}\n\n{_format_other_section(category_metas, content_level, max_full_post_chars)}"
@@ -785,24 +912,17 @@ def generate_activity_report(
         return "\n\n".join(parts)
     except Exception as e:
         logger.exception("Report generation failed")
-        msg = str(e)
-        if "504" in msg or "Gateway time-out" in msg or "timeout" in msg.lower():
-            return (
-                "❌ The LLM request timed out (504). Try again in a few minutes, "
-                "or run the pipeline with a **limit** to use fewer posts."
-            )
-        if "<!DOCTYPE" in msg or "<html" in msg.lower() or "<span" in msg:
-            return "❌ The LLM provider returned an error page. Try again later or check your API/network."
-        return f"❌ Error generating report: {msg[:200]}"
+        return _report_error_message(e)
 
 
 def _report_error_message(e: Exception) -> str:
     """Turn an exception into a short, UI-safe message (no HTML)."""
     msg = str(e)
-    if "504" in msg or "Gateway time-out" in msg or "timeout" in msg.lower():
+    if _is_llm_timeout_error(e):
         return (
-            "❌ The LLM request timed out (504). Try again in a few minutes, "
-            "or run the pipeline with a limit to use fewer posts."
+            "❌ The LLM provider timed out (proxy limit, often ~120s per request). "
+            "Your pipeline data is cached — rerun with **Skip fetch** to retry only the report. "
+            "Try **Per category** mode, a shorter period, or a lower **Max posts** limit."
         )
     if any(tag in msg for tag in ("<!DOCTYPE", "<html", "<span", "<div")):
         return "❌ The LLM provider returned an error page. Try again later or check your API/network."
@@ -1507,6 +1627,14 @@ def create_pipeline_interface():
             else:
                 report_q: queue.Queue = queue.Queue()
                 sentinel = object()
+                report_progress: dict[str, str | float] = {
+                    "label": "preparing report…",
+                    "frac": 0.0,
+                }
+
+                def _on_report_progress(label: str, frac: float) -> None:
+                    report_progress["label"] = label
+                    report_progress["frac"] = max(0.0, min(1.0, frac))
 
                 def _generate_report_worker() -> None:
                     try:
@@ -1520,6 +1648,7 @@ def create_pipeline_interface():
                                 report_model=rep_mod or None,
                                 period=last_clean,
                                 activities_csv_path=get_default_csv_path(),
+                                progress_callback=_on_report_progress,
                             )
                         )
                     except Exception as e:
@@ -1533,9 +1662,11 @@ def create_pipeline_interface():
                     try:
                         item = report_q.get(timeout=WS_KEEPALIVE_SECONDS)
                     except queue.Empty:
-                        logger.info("Report generation still in progress…")
+                        rp_label = str(report_progress["label"])
+                        rp_frac = float(report_progress.get("frac", 0.0))
+                        logger.info("Report generation: %s", rp_label)
                         yield (
-                            _render_pipeline_status("preparing report…", (4, 0.5)),
+                            _render_pipeline_status(rp_label, (4, rp_frac)),
                             gr.update(value="_Generating report…_"),
                             cache,
                             gr.update(interactive=False),
