@@ -3,6 +3,7 @@
 import time
 
 from linkedin_api.gradio_app import (
+    KEEPALIVE_TICK,
     _normalize_report_markdown,
     _stream_with_keepalive,
 )
@@ -35,7 +36,7 @@ def test_stream_with_keepalive_emits_during_stall():
         yield "only"
 
     def keepalive():
-        return "ping"
+        return KEEPALIVE_TICK
 
     out = list(_stream_with_keepalive(fast(), keepalive, interval=0.05))
     assert out == ["only"]
@@ -46,4 +47,4 @@ def test_stream_with_keepalive_emits_during_stall():
 
     out = list(_stream_with_keepalive(very_slow(), keepalive, interval=0.02))
     assert out[-1] == "done"
-    assert "ping" in out
+    assert KEEPALIVE_TICK in out

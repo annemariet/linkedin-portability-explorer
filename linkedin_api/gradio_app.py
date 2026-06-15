@@ -823,6 +823,7 @@ WS_KEEPALIVE_SECONDS = 20.0
 PERIOD_SYNTAX = "e.g. 1d, 7d, 14d, 30d, 1w, 2w, 1m"
 
 _T = TypeVar("_T")
+KEEPALIVE_TICK = object()
 
 
 def _stream_with_keepalive(
@@ -1399,9 +1400,10 @@ def create_pipeline_interface():
                     summary_provider=sum_prov or None,
                     summary_model=sum_mod or None,
                 )
-                for chunk in _stream_with_keepalive(
-                    pipeline, _pipeline_keepalive_outputs
-                ):
+                for chunk in _stream_with_keepalive(pipeline, lambda: KEEPALIVE_TICK):
+                    if chunk is KEEPALIVE_TICK:
+                        yield _pipeline_keepalive_outputs()
+                        continue
                     last = chunk.strip().split("\n")[-1] if chunk.strip() else ""
                     status_update = _status_from_pipeline_line(last)
                     if status_update is not None:
