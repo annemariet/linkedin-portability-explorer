@@ -1,12 +1,14 @@
-"""Unit tests for pipeline progress rendering in gradio_app."""
+"""Unit tests for pipeline progress rendering in gradio_pipeline_ui."""
 
-from linkedin_api.gradio_app import (
+from linkedin_api.gradio_pipeline_ui import (
     PIPELINE_HINT_TEXT,
+    _render_pipeline_status,
+    _status_from_pipeline_line,
+)
+from linkedin_api.pipeline_report import (
     REPORT_MODE_CHOICES,
     REPORT_MODE_PER_CATEGORY,
     REPORT_MODE_SINGLE_PASS,
-    _render_pipeline_status,
-    _status_from_pipeline_line,
 )
 
 
@@ -47,6 +49,19 @@ def test_status_from_pipeline_line_parses_summarizing_fraction():
 
 def test_status_from_pipeline_line_handles_failures():
     assert _status_from_pipeline_line("❌ Failed: boom") == ((4, 1.0), "Failed.")
+
+
+def test_report_cache_status_label_disk_and_session():
+    from linkedin_api.gradio_pipeline_ui import _report_cache_status_label
+
+    assert "disk" in _report_cache_status_label("disk").lower()
+    assert "session" in _report_cache_status_label("session").lower()
+
+
+def test_render_pipeline_status_shows_cache_hit_label():
+    html = _render_pipeline_status("Report loaded from cache (disk)", (4, 1.0))
+    assert "Report loaded from cache (disk)" in html
+    assert "width: 100%;" in html
 
 
 def test_report_mode_choices_have_label_value_pairs():

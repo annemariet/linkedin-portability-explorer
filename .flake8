@@ -12,4 +12,4 @@ exclude =
 per-file-ignores =
     __init__.py:F401
     scripts/*.py:E402,F401
-    linkedin_api/gradio_app.py:E402,F401
+    linkedin_api/gradio_app.py:E402

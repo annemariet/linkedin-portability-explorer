@@ -252,6 +252,7 @@ def _run_enrichment(to_enrich: list[EnrichedRecord]):
     for i, rec in enumerate(to_enrich):
         urn = rec.post_urn
         url = rec.post_url
+        logger.info("Enriching %d/%d: %s", i + 1, total, url or urn or "?")
         if not (urn and url):
             yield i + 1, total
             continue

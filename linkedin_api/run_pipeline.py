@@ -15,6 +15,7 @@ import argparse
 import logging
 import sys
 import traceback
+from collections.abc import Callable
 from io import StringIO
 from types import SimpleNamespace
 
@@ -183,6 +184,7 @@ def run_pipeline_ui_streaming(
     batch_size: int = 5,
     summary_provider: str | None = None,
     summary_model: str | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ):
     """
     Generator that runs the MVP pipeline and yields user-friendly progress for the UI.
@@ -190,6 +192,10 @@ def run_pipeline_ui_streaming(
     Full technical output goes to the terminal (stdout). Yields only short progress
     lines so the UI stays readable.
     """
+
+    def _cancelled() -> bool:
+        return bool(should_cancel and should_cancel())
+
     args = SimpleNamespace(
         last=last,
         from_cache=from_cache,
@@ -211,6 +217,9 @@ def run_pipeline_ui_streaming(
 
     try:
         yield _add("Starting pipeline…")
+        if _cancelled():
+            yield _add("⏹ Stopped.")
+            return
         activities, n1 = _collect_activities(args)
         yield _add(f"Collected {n1} activities.")
 
@@ -220,11 +229,18 @@ def run_pipeline_ui_streaming(
         gen = _enrich_activities_streaming(activities, args)
         try:
             while True:
+                if _cancelled():
+                    lines[-1] = "Enriching stopped."
+                    yield _snapshot()
+                    return
                 done, total = next(gen)
                 lines[-1] = f"Enriching {done}/{total}…"
                 yield _snapshot()
         except StopIteration as e:
             n2 = e.value
+        if _cancelled():
+            yield _add("⏹ Stopped.")
+            return
         lines[-1] = f"Enriched {n2} activities."
         yield _snapshot()
 
@@ -235,11 +251,18 @@ def run_pipeline_ui_streaming(
         gen = _fetch_linked_content_streaming(args, urns=urns)
         try:
             while True:
+                if _cancelled():
+                    lines[-1] = "Fetching linked URLs stopped."
+                    yield _snapshot()
+                    return
                 done, total = next(gen)
                 lines[-1] = f"Fetching linked URLs {done}/{total}…"
                 yield _snapshot()
         except StopIteration as e:
             n_urls = e.value or 0
+        if _cancelled():
+            yield _add("⏹ Stopped.")
+            return
         lines[-1] = f"Fetched {n_urls} URL(s) from linked posts."
         yield _snapshot()
 
@@ -253,11 +276,18 @@ def run_pipeline_ui_streaming(
         )
         try:
             while True:
+                if _cancelled():
+                    lines[-1] = "Summarizing stopped."
+                    yield _snapshot()
+                    return
                 batches_done, total_batches = next(gen)
                 lines[-1] = f"Summarizing batch {batches_done}/{total_batches}…"
                 yield _snapshot()
         except StopIteration as e:
             n3 = e.value or 0
+        if _cancelled():
+            yield _add("⏹ Stopped.")
+            return
         lines[-1] = f"Summarized {n3} posts."
         yield _snapshot()
 
