@@ -46,6 +46,24 @@ OLLAMA_DEFAULT_URL = "http://localhost:11434"
 # Default model for OpenAI-compatible API (Mammouth, etc.) when LLM_MODEL is unset.
 OPENAI_COMPAT_DEFAULT_MODEL = "gpt-5-nano"
 
+# Mammouth lists some Gemini ids on /public/models that fail on /v1/chat/completions.
+_MAMMOUTH_UNSUPPORTED_CHAT_PREFIXES = ("gemini-2.5", "gemini-2.0-flash")
+
+
+def resolve_mammouth_chat_model(model: str, *, quiet: bool = False) -> str:
+    """Map public-catalog ids to a Mammouth chat-compatible model when needed."""
+    if any(model.startswith(p) for p in _MAMMOUTH_UNSUPPORTED_CHAT_PREFIXES):
+        if not quiet:
+            warnings.warn(
+                f"LLM_MODEL={model!r} is not supported for Mammouth chat; "
+                f"using {OPENAI_COMPAT_DEFAULT_MODEL}. "
+                "Pick another model from the Report dropdown.",
+                stacklevel=2,
+            )
+        return OPENAI_COMPAT_DEFAULT_MODEL
+    return model
+
+
 # Keyring service/account for LLM API keys
 _KEYRING_SERVICE = "agent-fleet-rts"
 _KEYRING_ACCOUNT = "mammouth_api_key"
@@ -257,17 +275,11 @@ def create_llm(
             if provider_override == "mammouth"
             else os.getenv("LLM_BASE_URL", MAMMOUTH_BASE_URL)
         )
-        if MAMMOUTH_BASE_URL in (base_url or "").split("?")[0] and model.startswith(
-            "gemini-2.5"
+        if (
+            MAMMOUTH_BASE_URL in (base_url or "").split("?")[0]
+            and provider_override == "mammouth"
         ):
-            if not quiet:
-                warnings.warn(
-                    f"LLM_MODEL={model!r} may be invalid for Mammouth. "
-                    f"Using {OPENAI_COMPAT_DEFAULT_MODEL}. "
-                    "Set LLM_MODEL to a model from GET /v1/models if needed.",
-                    stacklevel=2,
-                )
-            model = OPENAI_COMPAT_DEFAULT_MODEL
+            model = resolve_mammouth_chat_model(model, quiet=quiet)
 
         from neo4j_graphrag.llm import OpenAILLM
 

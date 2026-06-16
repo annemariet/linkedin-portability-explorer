@@ -21,6 +21,7 @@ def _stream_with_keepalive(
     keepalive: Callable[[], _T],
     *,
     interval: float = WS_KEEPALIVE_SECONDS,
+    should_stop: Callable[[], bool] | None = None,
 ) -> Iterator[_T]:
     """Yield from *iterator*; emit *keepalive()* if no item arrives within *interval*."""
     q: queue.Queue = queue.Queue()
@@ -29,6 +30,8 @@ def _stream_with_keepalive(
     def feed() -> None:
         try:
             for item in iterator:
+                if should_stop and should_stop():
+                    break
                 q.put(item)
         except Exception as e:
             q.put(e)
@@ -37,9 +40,13 @@ def _stream_with_keepalive(
 
     threading.Thread(target=feed, daemon=True).start()
     while True:
+        if should_stop and should_stop():
+            break
         try:
             item = q.get(timeout=interval)
         except queue.Empty:
+            if should_stop and should_stop():
+                break
             yield keepalive()
             continue
         if item is sentinel:

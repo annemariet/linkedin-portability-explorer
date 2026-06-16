@@ -14,7 +14,10 @@ from linkedin_api.gradio_keepalive import (
     _stream_with_keepalive,
     normalize_report_markdown,
 )
-from linkedin_api.llm_config import get_default_provider_model
+from linkedin_api.llm_config import (
+    get_default_provider_model,
+    resolve_mammouth_chat_model,
+)
 from linkedin_api.llm_models import fetch_all_provider_models, fetch_models_for_provider
 from linkedin_api.pipeline_report import (
     CONTENT_LEVEL_CHOICES,
@@ -380,10 +383,35 @@ def create_pipeline_interface():
                 running=True,
             )
 
-        def stop_run(ctrl: RunControl):
+        def stop_run(ctrl: RunControl, cache):
             ctrl["cancel"] = True
             logger.info("Pipeline stop requested")
-            return ctrl
+            stopped = _stopped_run_outputs(cache)
+            return (ctrl, *stopped)
+
+        def _resolve_runtime_model(
+            provider: str | None, model: str | None, stage: str
+        ) -> str | None:
+            """Re-fetch provider models and fall back if the selected id is unavailable."""
+            if not provider or not model:
+                return model
+            choices = fetch_models_for_provider(provider) or []
+            ids = [mid for _, mid in choices]
+            if model in ids:
+                resolved = model
+            else:
+                fallback = ids[0] if ids else model
+                logger.warning(
+                    "Selected %s model %r is not in the current %s list; using %r",
+                    stage,
+                    model,
+                    provider,
+                    fallback,
+                )
+                resolved = fallback
+            if provider == "mammouth":
+                resolved = resolve_mammouth_chat_model(resolved, quiet=False)
+            return resolved
 
         def run_all(
             last: str,
@@ -429,6 +457,9 @@ def create_pipeline_interface():
             stage_progress: tuple[int, float] = (0, 0.0)
             step_label = "fetching…"
 
+            def _is_stopped() -> bool:
+                return bool(ctrl.get("cancel"))
+
             def _pipeline_keepalive_outputs():
                 return _pipeline_run_outputs(
                     _render_pipeline_status(step_label, stage_progress),
@@ -438,10 +469,13 @@ def create_pipeline_interface():
                 )
 
             def _check_user_stop() -> bool:
-                if ctrl.get("cancel"):
+                if _is_stopped():
                     logger.info("Pipeline run cancelled by user")
                     return True
                 return False
+
+            sum_mod = _resolve_runtime_model(sum_prov, sum_mod, "summary")
+            rep_mod = _resolve_runtime_model(rep_prov, rep_mod, "report")
 
             try:
                 pipeline = run_pipeline_ui_streaming(
@@ -450,8 +484,13 @@ def create_pipeline_interface():
                     limit=lim_int,
                     summary_provider=sum_prov or None,
                     summary_model=sum_mod or None,
+                    should_cancel=_is_stopped,
                 )
-                for chunk in _stream_with_keepalive(pipeline, lambda: KEEPALIVE_TICK):
+                for chunk in _stream_with_keepalive(
+                    pipeline,
+                    lambda: KEEPALIVE_TICK,
+                    should_stop=_is_stopped,
+                ):
                     if chunk is KEEPALIVE_TICK:
                         if _check_user_stop():
                             yield _stopped_run_outputs(cache)
@@ -481,6 +520,9 @@ def create_pipeline_interface():
                         return
                     yield _pipeline_keepalive_outputs()
             except Exception as e:
+                if _is_stopped():
+                    yield _stopped_run_outputs(cache)
+                    return
                 logger.exception("Pipeline failed")
                 err_msg = str(e)[:200]
                 _ensure_min_progress_visibility()
@@ -579,6 +621,7 @@ def create_pipeline_interface():
                                 "Callable[[], ReportProgress | ReportComplete]",
                                 lambda: KEEPALIVE_TICK,
                             ),
+                            should_stop=_is_stopped,
                         ):
                             if event is KEEPALIVE_TICK:
                                 if _check_user_stop():
@@ -666,8 +709,16 @@ def create_pipeline_interface():
         )
         stop_btn.click(
             fn=stop_run,
-            inputs=[run_ctrl],
-            outputs=[run_ctrl],
+            inputs=[run_ctrl, report_cache_state],
+            outputs=[
+                run_ctrl,
+                pipeline_status,
+                report_output,
+                report_cache_state,
+                run_btn,
+                stop_btn,
+                prompt_debug_output,
+            ],
             cancels=[run_event],
             queue=False,
         )

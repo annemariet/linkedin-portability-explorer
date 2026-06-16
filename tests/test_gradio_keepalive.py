@@ -84,3 +84,20 @@ def test_stream_with_keepalive_slow():
     out = list(_stream_with_keepalive(very_slow(), keepalive, interval=0.02))
     assert out[-1] == "done"
     assert KEEPALIVE_TICK in out
+
+
+def test_stream_with_keepalive_stops_on_should_stop():
+    def slow():
+        for i in range(20):
+            time.sleep(0.05)
+            yield i
+
+    out = list(
+        _stream_with_keepalive(
+            slow(),
+            lambda: KEEPALIVE_TICK,
+            interval=0.02,
+            should_stop=lambda: True,
+        )
+    )
+    assert out == []
