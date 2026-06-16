@@ -51,6 +51,19 @@ def test_status_from_pipeline_line_handles_failures():
     assert _status_from_pipeline_line("❌ Failed: boom") == ((4, 1.0), "Failed.")
 
 
+def test_report_cache_status_label_disk_and_session():
+    from linkedin_api.gradio_pipeline_ui import _report_cache_status_label
+
+    assert "disk" in _report_cache_status_label("disk").lower()
+    assert "session" in _report_cache_status_label("session").lower()
+
+
+def test_render_pipeline_status_shows_cache_hit_label():
+    html = _render_pipeline_status("Report loaded from cache (disk)", (4, 1.0))
+    assert "Report loaded from cache (disk)" in html
+    assert "width: 100%;" in html
+
+
 def test_report_mode_choices_have_label_value_pairs():
     """Gradio dropdown passes value (2nd elem); each choice is (label, value)."""
     values = [v for _, v in REPORT_MODE_CHOICES]

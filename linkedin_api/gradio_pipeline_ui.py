@@ -63,6 +63,13 @@ MIN_PROGRESS_VISIBILITY_SECONDS = 0.6
 PERIOD_SYNTAX = "e.g. 1d, 7d, 14d, 30d, 1w, 2w, 1m"
 
 
+def _report_cache_status_label(source: str) -> str:
+    """User-visible status when report is reused from cache."""
+    if source == "disk":
+        return "Report loaded from cache (disk)"
+    return "Report loaded from cache (session)"
+
+
 def _render_pipeline_status(
     step_label: str | None = None,
     stage_progress: tuple[int, float] | None = None,
@@ -571,6 +578,7 @@ def create_pipeline_interface():
             )
             result: str | None = None
             cache_out = cache
+            report_cache_source: str | None = None
             if not metas:
                 result = (
                     "No summarized posts found. Run the pipeline first "
@@ -591,10 +599,12 @@ def create_pipeline_interface():
                 disk = _load_report_cache(sig)
                 if disk is not None:
                     result = disk[0]
+                    report_cache_source = "disk"
                     logger.info("Report cache hit (disk)")
                     cache_out = (result, sig)
                 elif cache is not None and cache[1] == sig:
                     result = cache[0]
+                    report_cache_source = "session"
                     logger.info("Report cache hit (session)")
                     cache_out = cache
                 else:
@@ -661,8 +671,15 @@ def create_pipeline_interface():
                     else:
                         cache_out = None
             display_result = normalize_report_markdown(result or "")
+            if report_cache_source:
+                status_html = _render_pipeline_status(
+                    _report_cache_status_label(report_cache_source),
+                    (4, 1.0),
+                )
+            else:
+                status_html = _render_pipeline_status(None, None)
             yield _pipeline_run_outputs(
-                _render_pipeline_status(None, None),
+                status_html,
                 display_result,
                 cache_out,
                 running=False,
