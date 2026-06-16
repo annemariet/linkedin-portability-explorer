@@ -273,14 +273,58 @@ def _format_other_section(
     return "\n".join(lines) if lines else "_No posts in this category._"
 
 
-_SINGLE_PASS_SECTION_SYSTEM = (
+_SINGLE_PASS_SYSTEM = (
     "You are a concise analyst. The user shares LinkedIn posts from a specific period. "
-    "Each post includes 'Activity: <date>' and 'Posted: <date>' (or 'unknown'), plus URL, "
-    "category/tags, and optionally summary or full content.\n\n"
-    "Produce markdown for ONLY the **{section}** section of a LinkedIn news digest. "
-    "Use bullet points with inline **links** to sources. Group related posts when appropriate. "
-    "Take temporality into account (late news). Output valid markdown only — no section heading, "
-    "no preamble."
+    "Each post includes 'Activity: <date>' and 'Posted: <date>' (or 'unknown'), plus URL, category/tags, "
+    "and optionally summary or full content.\n\n"
+    """Produce a markdown report with:
+1. One section per category: Product announcements, Tutorials & how-to, Opinion & hot takes,
+   Papers & research, Experiments & benchmarks, Company & career news, Other. Put each post into the right category
+   based on content.
+2. For each section: bullet points with the most important news for the category, with inline **links**
+   to the relevant content as well as the source. See the example below for how links can be inserted.
+   A bullet point may group articles if they cite the same product/idea/technology/etc. or are closely related
+   (eg competing models, similar subdomains, etc).
+3. Cite the post as the source of the information, with the Author name if it's a person, otherwise it can be inlined
+   with the entity name making the announcement.
+4. Take temporality into account: if a post was published several weeks before the user reacted to it,
+   add a brief note that it is 'late news' and assess whether it is still relevant.
+   Posts are ordered by reaction time (earliest first).
+5. Output valid markdown only. No preamble.
+
+Example input (keeping only the links for brevity):
+**Posts**:
+- https://www.linkedin.com/feed/update/urn:li:ugcPost:7432397932697481216
+- https://www.linkedin.com/feed/update/urn:li:ugcPost:7432135776701693952
+- https://www.linkedin.com/feed/update/urn:li:activity:7430628329965137920
+- https://www.linkedin.com/feed/update/urn:li:activity:7427799631356473344
+- https://www.linkedin.com/feed/update/urn:li:activity:7432043070642290688
+- https://www.linkedin.com/feed/update/urn:li:activity:7432412067652943872
+
+Example output (showing only the Product Announcements section):
+The period saw several significant product launches and infrastructure releases.
+
+- **Data visualization**: It looks like there is a new player in town in the datavis world!
+  [Graphy](https://graphy.dev/) launched its Developer Platform as the first charting
+  infrastructure for AI-native products, targeting the growing need for data visualization in AI applications
+  ([from Andrey Vinitsky](https://www.linkedin.com/feed/update/urn:li:ugcPost:7432397932697481216)).
+- **Agentic coding**:
+    * [Cursor announced](https://www.linkedin.com/feed/update/urn:li:ugcPost:7432135776701693952/)
+      a major capability upgrade allowing agents to setup their own VM and control their own computers and send videos
+      of their work (get started [here](https://cursor.com/onboard)).
+    * [LightOn](https://lighton.ai/) [released](https://huggingface.co/blog/lightonai/colgrep-lateon-code) 2 new
+      LateOn-code models on HuggingFace, and ColGREP, a Rust-based multi-vector search tool for coding agents (from
+      [Tom Aarsen](https://www.linkedin.com/feed/update/urn:li:activity:7427799631356473344/)).
+- **Data and MCPs**: [data.gouv.fr](https://www.linkedin.com/feed/update/urn:li:activity:7432412067652943872/)
+  announced an experimental MCP server to make public datasets accessible to AI chatbots.
+  Check it out on Github: https://github.com/datagouv/datagouv-mcp.
+
+
+https://www.linkedin.com/feed/update/urn:li:activity:7432043070642290688/ should be either in the Company & career
+news or with Research news.
+https://www.linkedin.com/feed/update/urn:li:activity:7430628329965137920/ can be skipped because it's not not so
+relevant, an inference provider adding a new model must happen regularly.
+"""
 )
 
 
@@ -296,26 +340,24 @@ def _is_llm_timeout_error(exc: BaseException) -> bool:
     )
 
 
-def _generate_single_pass_section(
+def _generate_single_pass_report(
     llm,
+    metas: list[dict],
     *,
-    section_label: str,
-    batch: list[dict],
     content_level: str,
     max_full_post_chars: int,
     period_dates: str | None,
     prompts_out: list[str] | None = None,
 ) -> str:
-    """One LLM call for a section batch (keeps each request under proxy timeouts)."""
-    block = "\n\n".join(
-        _format_post_for_prompt(m, content_level, max_full_post_chars) for m in batch
+    """One LLM call: all posts; prompt asks for a categorized markdown digest."""
+    blocks = "\n\n".join(
+        _format_post_for_prompt(m, content_level, max_full_post_chars) for m in metas
     )
     header = f"Period: {period_dates}\n\n" if period_dates else ""
-    prompt = f"{header}Posts for '{section_label}' ({len(batch)}):\n\n{block}"
+    prompt = f"{header}Posts ({len(metas)} total):\n\n{blocks}"
     if prompts_out is not None:
         prompts_out.append(prompt)
-    system = _SINGLE_PASS_SECTION_SYSTEM.format(section=section_label)
-    response = llm.invoke(prompt, system_instruction=system)
+    response = llm.invoke(prompt, system_instruction=_SINGLE_PASS_SYSTEM)
     return _llm_response_text(response)
 
 
@@ -694,27 +736,18 @@ class ReportComplete:
     signature: ReportSignature | None
 
 
-def _generate_report_events(
+def _generate_per_category_events(
     metas: list[dict],
     *,
-    report_mode: str,
     content_level: str,
     max_full_post_chars: int,
-    report_provider: str | None,
-    report_model: str | None,
+    llm,
     period_dates: str | None,
     sig: ReportSignature | None,
     should_cancel: Callable[[], bool] | None,
 ) -> Iterator[ReportProgress | ReportComplete]:
-    """Unified per-category and single-pass report generation."""
-    single_pass = report_mode == REPORT_MODE_SINGLE_PASS
+    """Per-category report: one 2–4 sentence summary batch per category section."""
     by_category = _group_metas_by_category(metas)
-    llm = create_llm(
-        stage="report",
-        json_mode=False,
-        provider_override=report_provider,
-        model_override=report_model,
-    )
     cat_batches: dict[str, list[list[dict]]] = {}
     for cat in REPORT_CATEGORIES:
         category_metas = by_category.get(cat)
@@ -759,42 +792,101 @@ def _generate_report_events(
                     f"report: {label} [{batch_idx}/{total_batches}]",
                     batch_idx / total_batches,
                 )
-            if single_pass:
-                section_parts.append(
-                    _generate_single_pass_section(
-                        llm,
-                        section_label=label,
-                        batch=batch,
-                        content_level=content_level,
-                        max_full_post_chars=max_full_post_chars,
-                        period_dates=period_dates,
-                        prompts_out=prompts_collected,
-                    )
+            section_parts.append(
+                _summarize_report_batch(
+                    llm,
+                    batch,
+                    label,
+                    content_level,
+                    max_full_post_chars=max_full_post_chars,
+                    prompts_out=prompts_collected,
+                    period_dates=period_dates,
                 )
-            else:
-                section_parts.append(
-                    _summarize_report_batch(
-                        llm,
-                        batch,
-                        label,
-                        content_level,
-                        max_full_post_chars=max_full_post_chars,
-                        prompts_out=prompts_collected,
-                        period_dates=period_dates,
-                    )
-                )
+            )
         parts.append(f"## {label}\n\n" + "\n\n".join(section_parts))
 
     if sig is not None and prompts_collected:
-        mode = "single-pass-sections" if single_pass else "per-category"
-        system = _SINGLE_PASS_SECTION_SYSTEM if single_pass else _BATCH_SYSTEM
-        _save_report_prompt_debug(mode, system, prompts_collected, sig)
+        _save_report_prompt_debug("per-category", _BATCH_SYSTEM, prompts_collected, sig)
 
     if not parts:
         yield ReportComplete("No posts to summarize.", sig)
         return
     intro = f"_Period: {period_dates}_\n\n" if period_dates else ""
     yield ReportComplete(intro + "\n\n".join(parts), sig)
+
+
+def _generate_single_pass_events(
+    metas: list[dict],
+    *,
+    content_level: str,
+    max_full_post_chars: int,
+    llm,
+    period_dates: str | None,
+    sig: ReportSignature | None,
+    should_cancel: Callable[[], bool] | None,
+) -> Iterator[ReportProgress | ReportComplete]:
+    """Single-pass report: one LLM call with all posts."""
+    if not metas:
+        yield ReportComplete("No posts to summarize.", sig)
+        return
+    _check_run_cancelled(should_cancel)
+    yield ReportProgress("report: generating (single pass)…", 0.0)
+    prompts_collected: list[str] = []
+    text = _generate_single_pass_report(
+        llm,
+        metas,
+        content_level=content_level,
+        max_full_post_chars=max_full_post_chars,
+        period_dates=period_dates,
+        prompts_out=prompts_collected,
+    )
+    if sig is not None and prompts_collected:
+        _save_report_prompt_debug(
+            "single-pass", _SINGLE_PASS_SYSTEM, prompts_collected, sig
+        )
+    intro = f"_Period: {period_dates}_\n\n" if period_dates else ""
+    yield ReportComplete(intro + text, sig)
+
+
+def _generate_report_events(
+    metas: list[dict],
+    *,
+    report_mode: str,
+    content_level: str,
+    max_full_post_chars: int,
+    report_provider: str | None,
+    report_model: str | None,
+    period_dates: str | None,
+    sig: ReportSignature | None,
+    should_cancel: Callable[[], bool] | None,
+) -> Iterator[ReportProgress | ReportComplete]:
+    """Stream report progress + final text; mode selects single-pass vs per-category."""
+    llm = create_llm(
+        stage="report",
+        json_mode=False,
+        provider_override=report_provider,
+        model_override=report_model,
+    )
+    if report_mode == REPORT_MODE_SINGLE_PASS:
+        yield from _generate_single_pass_events(
+            metas,
+            content_level=content_level,
+            max_full_post_chars=max_full_post_chars,
+            llm=llm,
+            period_dates=period_dates,
+            sig=sig,
+            should_cancel=should_cancel,
+        )
+        return
+    yield from _generate_per_category_events(
+        metas,
+        content_level=content_level,
+        max_full_post_chars=max_full_post_chars,
+        llm=llm,
+        period_dates=period_dates,
+        sig=sig,
+        should_cancel=should_cancel,
+    )
 
 
 def generate_report_events(
