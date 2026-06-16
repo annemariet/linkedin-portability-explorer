@@ -221,8 +221,12 @@ def get_report_model_id(
 ) -> str:
     """Report stage model identifier for cache invalidation. Format: provider:model."""
     if provider_override and model_override:
-        return f"{provider_override}:{model_override}"
-    provider, model = _resolve_provider_model("report")
+        provider = provider_override
+        model = model_override
+    else:
+        provider, model = _resolve_provider_model("report")
+    if provider == "mammouth":
+        model = resolve_mammouth_chat_model(model, quiet=True)
     return f"{provider}:{model}"
 
 

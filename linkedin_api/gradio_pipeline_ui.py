@@ -589,7 +589,7 @@ def create_pipeline_interface():
                     period=last_clean,
                 )
                 disk = _load_report_cache(sig)
-                if disk is not None and disk[1] == sig:
+                if disk is not None:
                     result = disk[0]
                     logger.info("Report cache hit (disk)")
                     cache_out = (result, sig)

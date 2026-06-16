@@ -41,6 +41,13 @@ def test_get_report_model_id_includes_model_in_cache_key(monkeypatch):
 
     assert get_report_model_id("mammouth", "gpt-4o") == "mammouth:gpt-4o"
 
+    from linkedin_api.llm_config import OPENAI_COMPAT_DEFAULT_MODEL
+
+    assert (
+        get_report_model_id("mammouth", "gemini-2.5-flash-lite")
+        == f"mammouth:{OPENAI_COMPAT_DEFAULT_MODEL}"
+    )
+
 
 def test_get_default_provider_model_maps_openai_to_mammouth(monkeypatch):
     """UI default for openai provider is mammouth; default model is gpt-5-nano."""

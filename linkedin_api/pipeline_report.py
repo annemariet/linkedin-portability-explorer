@@ -24,7 +24,7 @@ from linkedin_api.utils.linkedin_snowflake import post_created_at_from_urn
 
 logger = logging.getLogger(__name__)
 
-REPORT_MAX_POSTS = 50  # fallback when max_posts not set
+REPORT_MAX_POSTS = 50  # default for v2 cache migration when max_posts missing
 REPORT_MAX_POSTS_MINIMAL = 100
 REPORT_MAX_POSTS_SUMMARY = 50
 REPORT_MAX_POSTS_FULL = 20
@@ -397,38 +397,8 @@ def build_report_signature(
     )
 
 
-def _report_signature(
-    report_mode: str = REPORT_MODE_PER_CATEGORY,
-    content_level: str = CONTENT_LEVEL_SUMMARY,
-    max_posts: int | None = None,
-    max_full_post_chars: int = REPORT_MAX_FULL_POST_CHARS_DEFAULT,
-    report_provider: str | None = None,
-    report_model: str | None = None,
-    period: str = "7d",
-    activities_csv_path: Path | None = None,
-) -> tuple[str, int, tuple[str, ...], str, str, int, int, str] | None:
-    """Signature of post set + report model + report mode + content_level + max_posts + max_full_post_chars + period."""
-    limit = _resolve_max_posts(max_posts, content_level)
-    metas, _ = _get_posts_for_period(
-        period or "7d", limit, csv_path=activities_csv_path
-    )
-    if not metas:
-        return None
-    return build_report_signature(
-        metas,
-        report_mode=report_mode,
-        content_level=content_level,
-        max_posts=max_posts,
-        max_full_post_chars=max_full_post_chars,
-        report_provider=report_provider,
-        report_model=report_model,
-        period=period or "7d",
-    )
-
-
 _REPORT_CACHE_FILE = "report_cache.json"
 _REPORT_CACHE_VERSION = 4
-_REPORT_PROMPT_DEBUG_FILE = "report_prompt_last.md"
 
 
 def _get_report_cache_max_entries() -> int:
@@ -458,18 +428,8 @@ def _sig_to_cache_key(sig: ReportSignature) -> str:
     return json.dumps(_sig_to_key(sig), sort_keys=True)
 
 
-def _key_matches(key: dict, sig: ReportSignature) -> bool:
-    """True if key matches signature."""
-    return (
-        key.get("model_id") == sig[0]
-        and key.get("n") == sig[1]
-        and tuple(key.get("summarized_at", [])) == sig[2]
-        and key.get("report_mode") == sig[3]
-        and key.get("content_level") == sig[4]
-        and key.get("max_posts") == sig[5]
-        and key.get("max_full_post_chars") == sig[6]
-        and key.get("period", "7d") == sig[7]
-    )
+def _format_report_intro(period_dates: str | None) -> str:
+    return f"_Period: {period_dates}_\n\n" if period_dates else ""
 
 
 def _format_prompt_debug_content(mode: str, system: str, prompts: list[str]) -> str:
@@ -485,28 +445,21 @@ def _format_prompt_debug_content(mode: str, system: str, prompts: list[str]) -> 
     return "\n".join(parts)
 
 
-def _prompts_list_to_dict(prompts_list: list) -> dict:
+def _cache_list_to_dict(items: list, *, value_key: str) -> dict:
     """Migrate v3 list format to dict keyed by canonical cache key."""
     out: dict = {}
-    for e in prompts_list:
+    for e in items:
         key = e.get("key", {})
         ck = json.dumps(key, sort_keys=True)
-        out[ck] = {
-            "mode": e.get("mode", "?"),
-            "system": e.get("system", ""),
-            "prompts": e.get("prompts", []),
-            "hits": e.get("hits", 0),
-        }
-    return out
-
-
-def _reports_list_to_dict(reports_list: list) -> dict:
-    """Migrate v3 list format to dict keyed by canonical cache key."""
-    out: dict = {}
-    for e in reports_list:
-        key = e.get("key", {})
-        ck = json.dumps(key, sort_keys=True)
-        out[ck] = {"report": e.get("report", ""), "hits": e.get("hits", 0)}
+        if value_key == "prompts":
+            out[ck] = {
+                "mode": e.get("mode", "?"),
+                "system": e.get("system", ""),
+                "prompts": e.get("prompts", []),
+                "hits": e.get("hits", 0),
+            }
+        else:
+            out[ck] = {"report": e.get("report", ""), "hits": e.get("hits", 0)}
     return out
 
 
@@ -528,7 +481,7 @@ def _save_report_prompt_debug(
             data = {"report_cache_version": _REPORT_CACHE_VERSION, "prompts": {}}
         prompts_dict = data.get("prompts")
         if isinstance(prompts_dict, list):
-            prompts_dict = _prompts_list_to_dict(prompts_dict)
+            prompts_dict = _cache_list_to_dict(prompts_dict, value_key="prompts")
         prompts_dict = prompts_dict or {}
         existing_hits = prompts_dict.get(cache_key, {}).get("hits", 0)
         prompts_dict[cache_key] = {
@@ -563,7 +516,7 @@ def _load_report_prompt_debug(
             return "_No prompt cached for these params. Run the pipeline first._"
         prompts_data = data.get("prompts")
         if isinstance(prompts_data, list):
-            prompts_data = _prompts_list_to_dict(prompts_data)
+            prompts_data = _cache_list_to_dict(prompts_data, value_key="prompts")
         if isinstance(prompts_data, dict):
             cache_key = _sig_to_cache_key(signature)
             entry = prompts_data.get(cache_key)
@@ -596,10 +549,10 @@ def _load_report_cache(
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if data.get("report_cache_version", 0) < _REPORT_CACHE_VERSION:
-            return _load_report_cache_v2(path, sig)
+            return _load_report_cache_v2(data, sig)
         reports_data = data.get("reports")
         if isinstance(reports_data, list):
-            reports_data = _reports_list_to_dict(reports_data)
+            reports_data = _cache_list_to_dict(reports_data, value_key="report")
         if isinstance(reports_data, dict):
             cache_key = _sig_to_cache_key(sig)
             entry = reports_data.get(cache_key)
@@ -610,8 +563,8 @@ def _load_report_cache(
                     path.write_text(
                         json.dumps(data, ensure_ascii=False), encoding="utf-8"
                     )
-                except OSError:
-                    pass
+                except OSError as e:
+                    logger.warning("Could not update report cache hits: %s", e)
                 report = entry.get("report", "")
                 return (report, sig) if report else None
         return None
@@ -620,42 +573,38 @@ def _load_report_cache(
 
 
 def _load_report_cache_v2(
-    path: Path, sig: ReportSignature
+    data: dict, sig: ReportSignature
 ) -> tuple[str, ReportSignature] | None:
     """Backward compat: load from v2 single-entry format if key matches."""
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if data.get("report_cache_version", 0) != 2:
-            return None
-        model_id = data.get("model_id", "legacy")
-        n = data.get("n", 0)
-        at = tuple(data.get("summarized_at", []))
-        cached_mode = data.get("report_mode", REPORT_MODE_PER_CATEGORY)
-        cached_level = data.get("content_level")
-        if cached_level is None:
-            use_full = data.get("use_full_posts", True)
-            cached_level = CONTENT_LEVEL_FULL if use_full else CONTENT_LEVEL_SUMMARY
-        cached_max = data.get("max_posts", REPORT_MAX_POSTS)
-        cached_full_chars = data.get(
-            "max_full_post_chars", REPORT_MAX_FULL_POST_CHARS_DEFAULT
-        )
-        cached_period = data.get("period", "7d")
-        cached_sig: ReportSignature = (
-            model_id,
-            n,
-            at,
-            cached_mode,
-            cached_level,
-            cached_max,
-            cached_full_chars,
-            cached_period,
-        )
-        if not _key_matches(_sig_to_key(cached_sig), sig):
-            return None
-        report = data.get("report", "")
-        return (report, sig) if report else None
-    except (json.JSONDecodeError, OSError):
+    if data.get("report_cache_version", 0) != 2:
         return None
+    model_id = data.get("model_id", "legacy")
+    n = data.get("n", 0)
+    at = tuple(data.get("summarized_at", []))
+    cached_mode = data.get("report_mode", REPORT_MODE_PER_CATEGORY)
+    cached_level = data.get("content_level")
+    if cached_level is None:
+        use_full = data.get("use_full_posts", True)
+        cached_level = CONTENT_LEVEL_FULL if use_full else CONTENT_LEVEL_SUMMARY
+    cached_max = data.get("max_posts", REPORT_MAX_POSTS)
+    cached_full_chars = data.get(
+        "max_full_post_chars", REPORT_MAX_FULL_POST_CHARS_DEFAULT
+    )
+    cached_period = data.get("period", "7d")
+    cached_sig: ReportSignature = (
+        model_id,
+        n,
+        at,
+        cached_mode,
+        cached_level,
+        cached_max,
+        cached_full_chars,
+        cached_period,
+    )
+    if _sig_to_cache_key(cached_sig) != _sig_to_cache_key(sig):
+        return None
+    report = data.get("report", "")
+    return (report, sig) if report else None
 
 
 def _save_report_cache(report: str, sig: ReportSignature) -> None:
@@ -678,7 +627,7 @@ def _save_report_cache(report: str, sig: ReportSignature) -> None:
             }
         reports_dict = data.get("reports")
         if isinstance(reports_dict, list):
-            reports_dict = _reports_list_to_dict(reports_dict)
+            reports_dict = _cache_list_to_dict(reports_dict, value_key="report")
         reports_dict = reports_dict or {}
         existing_hits = reports_dict.get(cache_key, {}).get("hits", 0)
         reports_dict[cache_key] = {"report": report, "hits": existing_hits}
@@ -811,8 +760,7 @@ def _generate_per_category_events(
     if not parts:
         yield ReportComplete("No posts to summarize.", sig)
         return
-    intro = f"_Period: {period_dates}_\n\n" if period_dates else ""
-    yield ReportComplete(intro + "\n\n".join(parts), sig)
+    yield ReportComplete(_format_report_intro(period_dates) + "\n\n".join(parts), sig)
 
 
 def _generate_single_pass_events(
@@ -826,9 +774,6 @@ def _generate_single_pass_events(
     should_cancel: Callable[[], bool] | None,
 ) -> Iterator[ReportProgress | ReportComplete]:
     """Single-pass report: one LLM call with all posts."""
-    if not metas:
-        yield ReportComplete("No posts to summarize.", sig)
-        return
     _check_run_cancelled(should_cancel)
     yield ReportProgress("report: generating (single pass)…", 0.0)
     prompts_collected: list[str] = []
@@ -844,8 +789,7 @@ def _generate_single_pass_events(
         _save_report_prompt_debug(
             "single-pass", _SINGLE_PASS_SYSTEM, prompts_collected, sig
         )
-    intro = f"_Period: {period_dates}_\n\n" if period_dates else ""
-    yield ReportComplete(intro + text, sig)
+    yield ReportComplete(_format_report_intro(period_dates) + text, sig)
 
 
 def _generate_report_events(

@@ -16,29 +16,27 @@ from linkedin_api.pipeline_report import (
     _report_error_message,
 )
 
-_normalize_report_markdown = normalize_report_markdown
-
 
 def test_normalize_report_markdown_strips_fences():
     raw = "```markdown\n## Title\n\n- item\n```"
-    assert _normalize_report_markdown(raw) == "## Title\n\n- item"
+    assert normalize_report_markdown(raw) == "## Title\n\n- item"
 
 
 def test_normalize_report_markdown_empty_placeholder():
-    assert "empty" in _normalize_report_markdown("").lower()
+    assert "empty" in normalize_report_markdown("").lower()
 
 
 def test_normalize_report_markdown_converts_angle_bracket_urls():
     raw = "See <https://example.com/path> for details."
     assert (
-        _normalize_report_markdown(raw)
+        normalize_report_markdown(raw)
         == "See [https://example.com/path](https://example.com/path) for details."
     )
 
 
 def test_normalize_report_markdown_rejects_html_error_page():
     raw = "<!DOCTYPE html><html><body>Error</body></html>"
-    assert "error page" in _normalize_report_markdown(raw).lower()
+    assert "error page" in normalize_report_markdown(raw).lower()
 
 
 def test_is_llm_timeout_error_detects_524():
