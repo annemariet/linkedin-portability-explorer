@@ -28,6 +28,7 @@ from linkedin_api.activity_csv import get_default_csv_path
 from linkedin_api.enriched_record import EnrichedRecord
 from linkedin_api.summarize_activity import collect_from_csv, ensure_csv_fetched
 from linkedin_api.summarize_posts import summarize_posts, summarize_posts_streaming
+from linkedin_api.vault_export import run_vault_export_if_enabled
 
 
 def _collect_activities(args) -> tuple[list[EnrichedRecord], int]:
@@ -320,6 +321,11 @@ def main() -> int:
     parser.add_argument("--limit", type=int, help="Limit posts per phase")
     parser.add_argument("--batch-size", type=int, default=5, help="Phase 3 batch size")
     parser.add_argument("-q", "--quiet", action="store_true")
+    parser.add_argument(
+        "--output-root",
+        metavar="PATH",
+        help="Knowledge vault root for catalog writes (implies vault export when set)",
+    )
     args = parser.parse_args()
 
     if not args.last and not args.from_cache:
@@ -338,6 +344,11 @@ def main() -> int:
         if not args.quiet:
             print()  # newline after progress
         _summarize_posts(args)
+        run_vault_export_if_enabled(
+            activities,
+            output_root=getattr(args, "output_root", None),
+            quiet=args.quiet,
+        )
     except SystemExit as e:
         return e.code if isinstance(e.code, int) else 1
     except Exception as e:
