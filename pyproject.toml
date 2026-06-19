@@ -18,7 +18,6 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "kg-vault",
     "requests",
     "keyring",
     "beautifulsoup4>=4.12",
@@ -31,9 +30,6 @@ dependencies = [
     "ollama>=0.6.1",
     "tqdm>=4.67",
 ]
-
-[tool.uv.sources]
-kg-vault = { git = "https://github.com/annemariet/amai-lab.git", branch = "cursor/linkedin-vault-writes-9be6", subdirectory = "projects/kg-vault" }
 
 [dependency-groups]
 dev = [

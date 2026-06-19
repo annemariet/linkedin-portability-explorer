@@ -1276,11 +1276,6 @@ wheels = [
 ]
 
 [[package]]
-name = "kg-vault"
-version = "0.1.0"
-source = { editable = "../amai-lab/projects/kg-vault" }
-
-[[package]]
 name = "librt"
 version = "0.7.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1341,7 +1336,6 @@ dependencies = [
     { name = "beautifulsoup4" },
     { name = "gradio" },
     { name = "keyring" },
-    { name = "kg-vault" },
     { name = "neo4j" },
     { name = "neo4j-graphrag", extra = ["google", "openai"] },
     { name = "ollama" },
@@ -1373,7 +1367,6 @@ requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "gradio", specifier = ">=4.0.0" },
     { name = "keyring" },
-    { name = "kg-vault", editable = "../amai-lab/projects/kg-vault" },
     { name = "neo4j", specifier = "==5.28.2" },
     { name = "neo4j-graphrag", extras = ["google", "openai"], specifier = ">=1.10.1" },
     { name = "ollama", specifier = ">=0.6.1" },
