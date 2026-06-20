@@ -6,12 +6,12 @@ build-backend = "hatchling.build"
 packages = ["linkedin_api"]
 
 [project]
-name = "linkedin-api-client"
+name = "linkedin-portability"
 version = "0.3.0"
-description = "Python client for LinkedIn Portability API"
+description = "LinkedIn Member Data Portability client — activity fetch, content store, and optional GraphRAG"
 readme = "README.md"
 requires-python = ">=3.12"
-keywords = ["linkedin", "api", "rest.li"]
+keywords = ["linkedin", "portability", "dma", "graphrag", "neo4j"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python",

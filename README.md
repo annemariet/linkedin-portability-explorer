@@ -76,6 +76,15 @@ uv sync
 
 This installs Python 3.12 (if needed) and all dependencies.
 
+**Package name:** PyPI distribution is **`linkedin-portability`** (import as `linkedin_api`).
+Do not install PyPI **`linkedin-api-client`** — that is LinkedIn’s unrelated official SDK.
+
+As a library dependency:
+
+```bash
+pip install "linkedin-portability @ git+https://github.com/annemariet/linkedin-graph-rag.git"
+```
+
 ### 2. Get LinkedIn Access Token
 
 1. Go to [LinkedIn Developers](https://www.linkedin.com/developers/)

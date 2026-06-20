@@ -1328,7 +1328,7 @@ wheels = [
 ]
 
 [[package]]
-name = "linkedin-api-client"
+name = "linkedin-portability"
 version = "0.3.0"
 source = { editable = "." }
 dependencies = [
