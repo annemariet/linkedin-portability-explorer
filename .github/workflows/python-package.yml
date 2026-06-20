@@ -46,8 +46,7 @@ jobs:
       run: uv run flake8 linkedin_api tests examples scripts
 
     - name: Run mypy
-      run: uv run mypy linkedin_api || true
-      continue-on-error: true
+      run: uv run mypy linkedin_api
 
     #----------------------------------------------
     # Run test suite

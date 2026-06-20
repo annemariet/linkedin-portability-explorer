@@ -2,7 +2,12 @@
 
 import pytest
 
-from linkedin_api.llm_config import _resolve_api_key, _resolve_provider_model
+from linkedin_api.llm_config import (
+    AnthropicLLMClient,
+    _resolve_api_key,
+    _resolve_provider_model,
+    create_llm,
+)
 
 
 def test_resolve_provider_model_stage_override(monkeypatch):
@@ -75,22 +80,12 @@ def test_resolve_provider_model_fallback_to_global(monkeypatch):
 
 def test_create_llm_unknown_provider(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "unknown_provider")
-    from linkedin_api.llm_config import create_llm
-
     with pytest.raises(ValueError, match="Unknown LLM_PROVIDER"):
         create_llm()
 
 
-def test_create_embedder_unknown_provider(monkeypatch):
-    monkeypatch.setenv("EMBEDDING_PROVIDER", "unknown_provider")
-    from linkedin_api.llm_config import create_embedder
-
-    with pytest.raises(ValueError, match="Unknown EMBEDDING_PROVIDER"):
-        create_embedder()
-
-
 def test_module_importable():
-    from linkedin_api.llm_config import create_llm, create_embedder  # noqa: F401
+    from linkedin_api.llm_config import create_llm  # noqa: F401
 
 
 class TestResolveApiKey:
@@ -104,7 +99,6 @@ class TestResolveApiKey:
     def test_openai_api_key_fallback(self, monkeypatch):
         monkeypatch.delenv("LLM_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-456")
-        # Mock keyring to return None so we fall through to OPENAI_API_KEY
         import linkedin_api.llm_config as mod
 
         monkeypatch.setattr(mod, "_KEYRING_SERVICE", "__test_nonexistent__")
@@ -134,21 +128,7 @@ def test_create_llm_anthropic_defaults(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xyz")
     monkeypatch.delenv("LLM_MODEL", raising=False)
 
-    class DummyAnthropicLLM:
-        def __init__(self, model_name, model_params=None, **kwargs):
-            self.model_name = model_name
-            self.model_params = model_params
-            self.kwargs = kwargs
-
-    import neo4j_graphrag.llm as llm_module
-
-    monkeypatch.setattr(llm_module, "AnthropicLLM", DummyAnthropicLLM)
-
-    from linkedin_api.llm_config import create_llm
-
     llm = create_llm(quiet=True)
-    assert isinstance(llm, DummyAnthropicLLM)
-    assert llm.model_name == "claude-sonnet-4-5"
-    assert llm.model_params == {"max_tokens": 8192}
-    assert "temperature" not in llm.model_params
-    assert llm.kwargs["api_key"] == "sk-ant-xyz"
+    assert isinstance(llm, AnthropicLLMClient)
+    assert llm._model == "claude-sonnet-4-5"
+    assert llm._max_tokens == 8192

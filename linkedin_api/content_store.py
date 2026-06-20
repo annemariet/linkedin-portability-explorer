@@ -22,7 +22,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from linkedin_api.activity_csv import get_data_dir
 from linkedin_api.utils.urls import resolve_redirect, strip_utm_params
@@ -150,7 +150,7 @@ def load_comments(urn: str) -> dict[str, Any] | None:
     path = _comments_path(urn)
     if not path.exists():
         return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
 
 
 def has_comments(urn: str) -> bool:

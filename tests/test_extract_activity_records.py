@@ -1,10 +1,7 @@
 """Tests for ActivityRecord extraction from changelog elements."""
 
-from linkedin_api.activity_csv import ActivityRecord, ActivityType
-from linkedin_api.extract_graph_data import (
-    extract_activity_records,
-    records_to_neo4j_json,
-)
+from linkedin_api.activity_csv import ActivityType
+from linkedin_api.activity_extract import extract_activity_records
 from linkedin_api.utils.urns import build_comment_urn
 
 
@@ -202,92 +199,3 @@ class TestExtractActivityRecords:
         assert len(records) == 1
         assert records[0].time == "1774205916131"
         assert records[0].created_at.startswith("2026-")
-
-
-# -- records_to_neo4j_json --------------------------------------------------
-
-
-class TestRecordsToNeo4jJson:
-    def test_post_record_produces_nodes_and_rels(self):
-        rec = ActivityRecord(
-            activity_type=ActivityType.POST.value,
-            author_urn="urn:li:person:a1",
-            activity_urn="urn:li:share:p1",
-            post_url="https://linkedin.com/feed/update/urn:li:share:p1",
-            content="Test content",
-            time="1700000000000",
-            created_at="2023-11-14T22:13:20",
-        )
-        data = records_to_neo4j_json([rec])
-        assert data["statistics"]["posts"] == 1
-        assert data["statistics"]["people"] == 1
-        # Should produce IS_AUTHOR_OF relationship (new name)
-        rel_types = [r["type"] for r in data["relationships"]]
-        assert "IS_AUTHOR_OF" in rel_types
-
-    def test_reaction_record_produces_reacted_to(self):
-        rec = ActivityRecord(
-            activity_type=ActivityType.REACTION_TO_POST.value,
-            author_urn="urn:li:person:a1",
-            activity_urn="urn:li:share:p1",
-            reaction_type="LIKE",
-            time="1700000000000",
-            created_at="2023-11-14T22:13:20",
-        )
-        data = records_to_neo4j_json([rec])
-        rel_types = [r["type"] for r in data["relationships"]]
-        assert "REACTED_TO" in rel_types
-
-    def test_repost_record_produces_reposts(self):
-        rec = ActivityRecord(
-            activity_type=ActivityType.REPOST.value,
-            author_urn="urn:li:person:a1",
-            activity_urn="urn:li:share:repost1",
-            original_post_urn="urn:li:ugcPost:orig1",
-            time="1700000000000",
-            created_at="2023-11-14T22:13:20",
-        )
-        data = records_to_neo4j_json([rec])
-        rel_types = [r["type"] for r in data["relationships"]]
-        assert rel_types.count("REPOSTS") == 2  # Person->repost + repost->original
-
-    def test_comment_record_produces_comments_on(self):
-        rec = ActivityRecord(
-            activity_type=ActivityType.COMMENT.value,
-            author_urn="urn:li:person:a1",
-            activity_urn="urn:li:comment:(ugcPost:p1,c1)",
-            content="Nice!",
-            parent_urn="urn:li:ugcPost:p1",
-            time="1700000000000",
-            created_at="2023-11-14T22:13:20",
-        )
-        data = records_to_neo4j_json([rec])
-        rel_types = [r["type"] for r in data["relationships"]]
-        assert "IS_AUTHOR_OF" in rel_types
-        assert "COMMENTS_ON" in rel_types
-
-    def test_uses_new_relationship_names(self):
-        """Verify records_to_neo4j_json uses renamed relationships."""
-        records = [
-            ActivityRecord(
-                activity_type=ActivityType.POST.value,
-                author_urn="urn:li:person:a1",
-                activity_urn="urn:li:share:p1",
-                time="1700000000000",
-            ),
-            ActivityRecord(
-                activity_type=ActivityType.REACTION_TO_POST.value,
-                author_urn="urn:li:person:a2",
-                activity_urn="urn:li:share:p1",
-                reaction_type="LIKE",
-                time="1700000000000",
-            ),
-        ]
-        data = records_to_neo4j_json(records)
-        rel_types = {r["type"] for r in data["relationships"]}
-        # New names
-        assert "IS_AUTHOR_OF" in rel_types
-        assert "REACTED_TO" in rel_types
-        # Old names should NOT appear
-        assert "CREATES" not in rel_types
-        assert "REACTS_TO" not in rel_types

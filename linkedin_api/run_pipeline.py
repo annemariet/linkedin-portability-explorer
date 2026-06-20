@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-Run the full MVP pipeline: collect → enrich → summarize.
-
-Processes new data and backfills history (posts in store not yet summarized).
-
-Incremental: Running 7d then 30d avoids recomputing. Phase 1 reads the period slice
-from activities.csv. Phase 2 enriches into the content store (.md + .meta.json).
-Phase 3 LLM-summarizes posts that lack summary metadata.
-"""
+"""CLI entry point: collect → enrich → fetch linked URLs → summarize."""
 
 from __future__ import annotations
 
@@ -19,77 +11,42 @@ from collections.abc import Callable
 from io import StringIO
 from types import SimpleNamespace
 
-from linkedin_api.enrich_activities import (
-    enrich_activities,
-    enrich_activities_streaming,
-)
-from linkedin_api.fetch_linked_content import fetch_linked_content_streaming
-from linkedin_api.activity_csv import get_default_csv_path
+from linkedin_api.enrich_activities import enrich_activities_streaming
 from linkedin_api.enriched_record import EnrichedRecord
-from linkedin_api.summarize_activity import collect_from_csv, ensure_csv_fetched
-from linkedin_api.summarize_posts import summarize_posts, summarize_posts_streaming
+from linkedin_api.fetch_linked_content import fetch_linked_content_streaming
+from linkedin_api.pipeline import (
+    PipelineOptions,
+    collect_period,
+    enrich_records,
+    run_pipeline,
+    summarize_records,
+)
+from linkedin_api.summarize_posts import summarize_posts_streaming
 
 
-def _collect_activities(args) -> tuple[list[EnrichedRecord], int]:
-    """Collect from CSV (fetch + append when not skip-fetch). Returns (activities, count)."""
-    from datetime import datetime, timezone
-
-    from linkedin_api.summarize_activity import _parse_last
-
-    last = args.last or "30d"
-    start_dt = None
-    end_dt = None
-    if last:
-        start_ms = _parse_last(last)
-        if start_ms is None:
-            raise ValueError(f"Invalid --last '{last}'; use e.g. 7d, 14d, 30d")
-        start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
-        end_dt = datetime.now(timezone.utc)
-
-    ensure_csv_fetched(last, verbose=not args.quiet, skip_fetch=args.from_cache)
-
-    records = collect_from_csv(
-        start=start_dt, end=end_dt, csv_path=get_default_csv_path()
-    )
-    if not records and args.from_cache:
-        raise SystemExit(
-            'No data in activities.csv. Run extract_graph_data or use without "Skip fetch".'
-        )
-
-    if not args.quiet:
-        print(f"Collected {len(records)} activities")
-
-    return records, len(records)
-
-
-def _enrich_activities(activities: list[EnrichedRecord], args) -> int:
-    """Enrich activities into the content store. Returns count enriched."""
-    _, count = enrich_activities(activities, limit=args.limit)
-    if not args.quiet:
-        print(f"Enriched {count} activities")
-    return count
-
-
-def _summarize_posts(args):
-    """Summarize posts in store that lack a summary (via LLM)."""
-    n = summarize_posts(
+def _args_to_options(args) -> PipelineOptions:
+    return PipelineOptions(
+        last=args.last or "30d",
+        from_cache=args.from_cache,
         limit=args.limit,
         batch_size=args.batch_size,
         quiet=args.quiet,
     )
-    if not args.quiet:
-        if n == 0:
-            print("Summarized 0 posts.")
-        else:
-            print(f"Summarized {n} posts.")
-    return n
+
+
+def _collect_activities(args) -> tuple[list[EnrichedRecord], int]:
+    return collect_period(_args_to_options(args))
+
+
+def _enrich_activities(activities: list[EnrichedRecord], args) -> int:
+    return enrich_records(activities, limit=args.limit, quiet=args.quiet)
+
+
+def _summarize_posts(args) -> int:
+    return summarize_records(_args_to_options(args))
 
 
 def _enrich_activities_streaming(activities: list[EnrichedRecord], args):
-    """
-    Generator variant of _enrich_activities.
-    Yields (done, total) per activity. Returns count via StopIteration.
-    """
     gen = enrich_activities_streaming(activities, limit=args.limit)
     count = 0
     try:
@@ -101,12 +58,6 @@ def _enrich_activities_streaming(activities: list[EnrichedRecord], args):
 
 
 def _fetch_linked_content_streaming(args, urns: set[str] | None = None):
-    """
-    Generator: fetch content from URLs linked in posts. Yields (done, total).
-    Returns urls_fetched via StopIteration.
-
-    ``urns`` restricts processing to posts in the current activity period.
-    """
     gen = fetch_linked_content_streaming(limit=args.limit, skip_cached=True, urns=urns)
     try:
         while True:
@@ -116,10 +67,6 @@ def _fetch_linked_content_streaming(args, urns: set[str] | None = None):
 
 
 def _summarize_posts_streaming(args, summary_provider=None, summary_model=None):
-    """
-    Generator variant of _summarize_posts.
-    Yields (batches_done, total_batches) per batch. Returns total via StopIteration.
-    """
     gen = summarize_posts_streaming(
         limit=args.limit,
         batch_size=args.batch_size,
@@ -140,31 +87,22 @@ def run_pipeline_ui(
     limit: int | None = None,
     batch_size: int = 5,
 ) -> tuple[bool, str]:
-    """
-    Run the MVP pipeline with given options; capture stdout and return (success, log).
-
-    For use from Gradio or other UIs. Does not call sys.exit.
-    """
-    args = SimpleNamespace(
+    """Run pipeline; capture stdout and return (success, log)."""
+    opts = PipelineOptions(
         last=last,
         from_cache=from_cache,
         limit=limit,
         batch_size=batch_size,
         quiet=False,
     )
-    if not args.last and not args.from_cache:
-        args.from_cache = True
-        args.last = "30d"
+    if not opts.last and not opts.from_cache:
+        opts.from_cache = True
+        opts.last = "30d"
     out = StringIO()
     old_stdout = sys.stdout
     try:
         sys.stdout = out
-        activities, _ = _collect_activities(args)
-        _enrich_activities(activities, args)
-        urns = {rec.post_urn for rec in activities if rec.post_urn}
-        for _ in _fetch_linked_content_streaming(args, urns=urns):
-            pass  # exhaust generator
-        _summarize_posts(args)
+        run_pipeline(opts)
         return True, out.getvalue()
     except SystemExit as e:
         code = e.code if isinstance(e.code, int) else 1
@@ -186,12 +124,7 @@ def run_pipeline_ui_streaming(
     summary_model: str | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ):
-    """
-    Generator that runs the MVP pipeline and yields user-friendly progress for the UI.
-
-    Full technical output goes to the terminal (stdout). Yields only short progress
-    lines so the UI stays readable.
-    """
+    """Generator that runs the pipeline and yields user-friendly progress for the UI."""
 
     def _cancelled() -> bool:
         return bool(should_cancel and should_cancel())
@@ -223,7 +156,6 @@ def run_pipeline_ui_streaming(
         activities, n1 = _collect_activities(args)
         yield _add(f"Collected {n1} activities.")
 
-        # Enrich with per-activity progress (placeholder updated in-place)
         n2 = 0
         lines.append("Enriching…")
         gen = _enrich_activities_streaming(activities, args)
@@ -244,7 +176,6 @@ def run_pipeline_ui_streaming(
         lines[-1] = f"Enriched {n2} activities."
         yield _snapshot()
 
-        # Fetch linked URL content (posts with urls in metadata)
         urns = {rec.post_urn for rec in activities if rec.post_urn}
         n_urls = 0
         lines.append("Fetching linked URLs…")
@@ -266,7 +197,6 @@ def run_pipeline_ui_streaming(
         lines[-1] = f"Fetched {n_urls} URL(s) from linked posts."
         yield _snapshot()
 
-        # Summarize with per-batch progress (placeholder updated in-place)
         n3 = 0
         lines.append("Summarizing…")
         gen = _summarize_posts_streaming(
@@ -308,7 +238,7 @@ def main() -> int:
     logging.getLogger("linkedin_api.fetch_linked_content").setLevel(logging.INFO)
 
     parser = argparse.ArgumentParser(
-        description="Run MVP pipeline: collect → enrich → summarize (including history)."
+        description="Run pipeline: collect → enrich → fetch linked URLs → summarize."
     )
     parser.add_argument("--last", metavar="Nd", help="Period: 7d, 14d, 30d")
     parser.add_argument(
@@ -318,26 +248,21 @@ def main() -> int:
         help="Use only cached data from activities.csv (no API fetch)",
     )
     parser.add_argument("--limit", type=int, help="Limit posts per phase")
-    parser.add_argument("--batch-size", type=int, default=5, help="Phase 3 batch size")
+    parser.add_argument(
+        "--batch-size", type=int, default=5, help="Summarize batch size"
+    )
     parser.add_argument("-q", "--quiet", action="store_true")
     args = parser.parse_args()
 
-    if not args.last and not args.from_cache:
-        args.from_cache = True
-        args.last = "30d"
-        if not args.quiet:
+    opts = _args_to_options(args)
+    if not opts.last and not opts.from_cache:
+        opts.from_cache = True
+        opts.last = "30d"
+        if not opts.quiet:
             print("Using --skip-fetch --last 30d (default)")
 
     try:
-        activities, _ = _collect_activities(args)
-        _enrich_activities(activities, args)
-        urns = {rec.post_urn for rec in activities if rec.post_urn}
-        for done, total in _fetch_linked_content_streaming(args, urns=urns):
-            if not args.quiet:
-                print(f"\rFetching linked URLs {done}/{total}…", end="", flush=True)
-        if not args.quiet:
-            print()  # newline after progress
-        _summarize_posts(args)
+        run_pipeline(opts)
     except SystemExit as e:
         return e.code if isinstance(e.code, int) else 1
     except Exception as e:

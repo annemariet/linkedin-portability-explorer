@@ -1,83 +1,55 @@
-# LinkedIn Graph Data Extraction
+# linkedin-portability
 
-A Python client for extracting LinkedIn activity data from the **Member Data Portability API** and building a Neo4j knowledge graph. Data comes from selective reading of your own activity via the official API, not from scraping the site.
+Python client for the **LinkedIn Member Data Portability API**: fetch your post-related activities, enrich a local content store, fetch linked URLs, and optionally summarize with an LLM.
 
 ## Features
 
-- ✅ Fetch your post-related activities (posts, comments, reactions) via the Portability API
-- ✅ Extract entities and relationships for Neo4j
-- ✅ Optionally enrich posts with author profiles (using post URLs from the API)
-- ✅ Extract and link external resources (articles, videos, repos) from API content
-- ✅ Build Neo4j knowledge graph
-- ✅ Query graph with GraphRAG
+- Fetch post-related activities (posts, comments, reactions, reposts) via the Portability API
+- Append-only `activities.csv` cache under `~/.linkedin_api/data/`
+- Content store (Markdown + metadata sidecars) for enrichment and summaries
+- Fetch and cache linked article/page content
+- Optional LLM summarization and Gradio UI for pipeline + activity reports
 
-## Data Flow
-
-Data flows through two pipelines: **CLI (GraphRAG)** and **UI (report)**. Both use the LinkedIn Portability API but differ in storage, processing, and output.
-
-### CLI pipeline (GraphRAG)
-
-```
-LinkedIn API → extract_graph_data → CSV + JSON → build_graph → Neo4j
-    → enrich_graph (opt) → index_content → query_graphrag
-```
-
-- **Storage:** Master CSV (`~/.linkedin_api/data/activities.csv`), Neo4j
-- **Fetch:** Full changelog each run (or `--start-date`)
-- **Output:** Semantic search over indexed content (vector + graph traversal)
-
-### UI pipeline (Gradio Pipeline tab)
-
-```
-LinkedIn API → activities.csv → run_pipeline (collect → enrich → summarize) → Report
-```
-
-- **Storage:** `activities.csv`, `content_store/` (Markdown + metadata)
-- **Fetch:** Incremental (append to CSV since last run); period-filtered (7d, 14d…)
-- **Output:** Markdown activity report (LLM-summarized by category)
-
-### Key differences
-
-| Aspect | CLI | UI (Pipeline tab) |
-|--------|-----|------------------|
-| Data source | Portability API (full fetch) | Same API (incremental via activities.csv) |
-| Storage | CSV → Neo4j | CSV + content_store (filesystem) |
-| Graph | Neo4j with People, Posts, Comments | No graph; flat content store |
-| Output | GraphRAG queries | Markdown report |
-| Query | `query_graphrag` (CLI or Gradio GraphRAG tab) | Report only |
-
-### GraphRAG tab (UI)
-
-The Gradio **GraphRAG query** tab uses the same backend as CLI `query_graphrag`. It reads from Neo4j and requires the CLI pipeline (`extract_graph_data` → `build_graph` → `index_content`) to have been run first.
-
-### Diagrams
-
-```mermaid
-flowchart LR
-    API[LinkedIn API] --> CLI[extract_graph_data]
-    API --> UI[summarize_activity]
-    CLI --> CSV[CSV + Neo4j]
-    CLI --> GRAG[query_graphrag]
-    UI --> STORE[content_store]
-    UI --> RPT[Report]
-```
-
-Full flow diagrams in `docs/diagrams/` (Mermaid): `data-flow-cli.mmd`, `data-flow-ui.mmd`, `data-flow-overview.mmd`
-
-## Setup
-
-### 1. Install Dependencies
-
-This project uses `uv` for dependency management:
+## Install
 
 ```bash
-uv sync
+uv sync                    # core: fetch, CSV, content store, URL fetch
+uv sync --extra llm        # + OpenAI/Mammouth, Anthropic, Ollama
+uv sync --extra ui         # + Gradio app (includes llm extra)
 ```
-
-This installs Python 3.12 (if needed) and all dependencies.
 
 **Package name:** PyPI distribution is **`linkedin-portability`** (import as `linkedin_api`).
 Do not install PyPI **`linkedin-api-client`** — that is LinkedIn’s unrelated official SDK.
+
+## Library API
+
+```python
+from linkedin_api import PipelineOptions, run_pipeline, parse_period
+from linkedin_api import extract_activity_records, get_all_post_activities
+from linkedin_api import load_content, load_metadata, resolve_redirect, strip_utm_params
+
+opts = PipelineOptions(last="7d", from_cache=False)
+activities, stats = run_pipeline(opts)
+```
+
+## CLI entry points
+
+| Command | Description |
+|---------|-------------|
+| `linkedin-pipeline` | collect → enrich → fetch linked URLs → summarize |
+| `linkedin-gradio` | Gradio UI (pipeline + activity report) |
+
+## Data flow
+
+```
+LinkedIn API → activities.csv → pipeline (collect → enrich → fetch URLs → summarize)
+                                      ↓
+                              content_store/ + resources/
+```
+
+Downstream consumers (e.g. private vault export in amai-lab) should depend on the public `linkedin_api` API — not private `_` helpers.
+
+## Setup (auth)
 
 As a library dependency:
 

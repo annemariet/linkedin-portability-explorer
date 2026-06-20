@@ -6,9 +6,10 @@ LinkedIn Member Data Portability API, handling pagination, filtering, and errors
 """
 
 import logging
-from pathlib import Path
 from time import time
-from typing import List, Optional, Callable
+from typing import Callable, List, Optional
+
+from linkedin_api.activity_csv import get_data_dir
 from linkedin_api.utils.auth import build_linkedin_session, get_access_token
 
 logger = logging.getLogger(__name__)
@@ -18,8 +19,16 @@ BASE_URL = "https://api.linkedin.com/rest"
 API_MAX_BATCH_SIZE = (
     50  # LinkedIn API max; smaller values cause unnecessary calls and rate limiting
 )
-DEFAULT_START_TIME = 1764716400000  # Dec 3, 2025 00:00:00
-LAST_RUN_FILE = Path(__file__).parent.parent.parent / ".last_run"
+# LinkedIn retains changelog data for ~28 days; default fetch window matches that.
+_DEFAULT_LOOKBACK_MS = 28 * 24 * 60 * 60 * 1000
+
+
+def _default_start_time() -> int:
+    return int(time() * 1000) - _DEFAULT_LOOKBACK_MS
+
+
+def _last_run_file():
+    return get_data_dir() / ".last_run"
 
 
 class TokenExpiredError(Exception):
@@ -35,15 +44,14 @@ def get_last_processed_timestamp() -> Optional[int]:
     Returns:
         Timestamp in epoch milliseconds, or None if file doesn't exist or is invalid.
     """
-    if not LAST_RUN_FILE.exists():
+    last_run_file = _last_run_file()
+    if not last_run_file.exists():
         return None
 
     try:
-        content = LAST_RUN_FILE.read_text().strip()
+        content = last_run_file.read_text().strip()
         timestamp = int(content)
-        # Validate timestamp is reasonable (not too old, not in future)
-        # LinkedIn keeps data for 28 days, so allow up to 30 days old
-        min_valid = DEFAULT_START_TIME
+        min_valid = _default_start_time()
         max_valid = int(time() * 1000) + (30 * 24 * 60 * 60 * 1000)
 
         if timestamp < min_valid or timestamp > max_valid:
@@ -62,7 +70,7 @@ def save_last_processed_timestamp(timestamp: int) -> None:
         timestamp: Timestamp in epoch milliseconds.
     """
     try:
-        LAST_RUN_FILE.write_text(str(timestamp))
+        _last_run_file().write_text(str(timestamp))
     except OSError:
         pass  # Silently fail if we can't write
 
@@ -120,7 +128,7 @@ def fetch_changelog_data(
 
     # Auto-load saved timestamp if start_time not explicitly provided
     if start_time is None:
-        start_time = get_last_processed_timestamp() or DEFAULT_START_TIME
+        start_time = get_last_processed_timestamp() or _default_start_time()
 
     if verbose:
         print("🔍 Fetching all changelog data...")
