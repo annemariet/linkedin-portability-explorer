@@ -23,9 +23,12 @@ Typical pipeline
 
 CLI
 ---
-  uv run python -m linkedin_api.fetch_linked_content          # all posts
-  uv run python -m linkedin_api.fetch_linked_content --limit 5
-  uv run python -m linkedin_api.fetch_linked_content --dry-run
+  uv run linkedin-fetch-content          # all posts (preferred)
+  uv run python -m linkedin_api.fetch_linked_content          # same
+  uv run linkedin-fetch-content --limit 5
+  uv run linkedin-fetch-content --dry-run
+  uv run linkedin-fetch-content --verbose   # per-URL log lines (no progress bar)
+  uv run linkedin-fetch-content --no-progress
 """
 
 from __future__ import annotations
@@ -35,13 +38,16 @@ import hashlib
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass
+import re
+import sys
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 import requests
 from bs4 import BeautifulSoup
+from tqdm import tqdm
 
 from linkedin_api.activity_csv import get_data_dir
 from linkedin_api.content_store import (
@@ -49,12 +55,19 @@ from linkedin_api.content_store import (
     _load_registry,
     update_urls_metadata,
 )
+from linkedin_api.html_text import extract_html_body_text, x_article_blocks_to_text
 from linkedin_api.utils.urls import (
+    arxiv_paper_id,
+    canonical_resource_url,
     categorize_url,
     extract_urls_from_text,
+    fix_mojibake,
+    is_x_status_url,
     resolve_redirect,
+    rewrite_fetch_url,
     should_ignore_url,
     strip_utm_params,
+    x_status_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,11 +108,34 @@ class FetchResult:
     domain: str = ""
     error: str = ""
     fetched_at: str = ""
+    tldr: str = ""
+    summary_author: str = ""
+    summary_bullets: list[str] = field(default_factory=list)
+    summary_model: str = ""
+    summarized_at: str = ""
 
     @property
     def ok(self) -> bool:
         """True if at least a title or content was retrieved without error."""
         return bool((self.content or self.title) and not self.error)
+
+
+_BINARY_CONTENT_MARKERS = ("%PDF-", "\x89PNG")
+
+
+def is_exportable_resource(result: FetchResult) -> bool:
+    """Skip binary PDFs, errors, and title-only noise from vault export."""
+    if result.error:
+        return False
+    body = (result.content or "").strip()
+    title = (result.title or "").strip()
+    if body and any(body.startswith(marker) for marker in _BINARY_CONTENT_MARKERS):
+        return False
+    if not body and not title:
+        return False
+    if not body and title.startswith(("http://", "https://")):
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +150,30 @@ FetchStrategy = Callable[[str], tuple[str, str]]  # returns (title, content)
 
 
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2 MB — skip pathologically large pages
+_BINARY_PREFIXES = (b"%PDF-", b"\x89PNG\r\n", b"PK\x03\x04", b"\x1f\x8b\x08")
+
+
+def _decode_response_bytes(raw: bytes, resp: requests.Response) -> str:
+    """Decode HTTP body bytes, rejecting obvious binary payloads."""
+    if not raw:
+        raise ValueError("empty response")
+    if any(raw.startswith(prefix) for prefix in _BINARY_PREFIXES):
+        raise ValueError("binary content")
+    encoding = (resp.encoding or "").strip()
+    if encoding and encoding.lower() not in {"utf-8", "utf8"}:
+        try:
+            return fix_mojibake(raw.decode(encoding))
+        except (UnicodeDecodeError, LookupError):
+            pass
+    try:
+        from charset_normalizer import from_bytes
+
+        detected = from_bytes(raw).best()
+        if detected is not None:
+            return fix_mojibake(str(detected))
+    except Exception:
+        pass
+    return fix_mojibake(raw.decode("utf-8", errors="replace"))
 
 
 def _fetch_soup(
@@ -144,27 +204,101 @@ def _fetch_soup(
     resp.close()
     if not raw:
         raise ValueError("empty response")
-    html = raw.decode(resp.encoding or "utf-8", errors="replace")
+    html = _decode_response_bytes(raw, resp)
     soup = BeautifulSoup(html, "html.parser")
     og = soup.find("meta", property="og:title")
     title = (
-        str(og["content"]).strip()
+        fix_mojibake(str(og["content"]).strip())
         if og and og.get("content")
-        else (soup.title.get_text(strip=True) if soup.title else "")
+        else fix_mojibake(soup.title.get_text(strip=True) if soup.title else "")
     )
     return soup, title
 
 
 def _fetch_html_body(url: str) -> tuple[str, str]:
-    """Extract title and body text, stripping nav/chrome noise."""
+    """Extract title and body text, preserving inline code as Markdown backticks."""
     soup, title = _fetch_soup(url)
-    for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
-        tag.decompose()
-    body = soup.find("body") or soup
-    lines = [
-        ln.strip() for ln in body.get_text(separator="\n").splitlines() if ln.strip()
-    ]
-    return title, "\n".join(lines)
+    content = extract_html_body_text(soup)
+    return title, content
+
+
+_FXTWITTER_STATUS_API = "https://api.fxtwitter.com/status/{tweet_id}"
+_VXTWITTER_STATUS_API = "https://api.vxtwitter.com/status/{tweet_id}"
+_X_LOGIN_WALL_MARKERS = (
+    "log in\nsign up",
+    "don't miss what's happening",
+    "people on x are the first to know",
+)
+
+
+def _is_x_login_wall(content: str) -> bool:
+    lower = (content or "").lower()
+    if len(content) > 2500:
+        return False
+    return any(marker in lower for marker in _X_LOGIN_WALL_MARKERS)
+
+
+def _x_status_title(tweet: dict) -> str:
+    article = tweet.get("article") or {}
+    title = (article.get("title") or "").strip()
+    if title:
+        return title
+    author = tweet.get("author") or {}
+    name = (author.get("name") or "").strip()
+    handle = (author.get("screen_name") or "").strip()
+    if name and handle:
+        return f"{name} (@{handle}) on X"
+    if name:
+        return f"{name} on X"
+    return "Post on X"
+
+
+def _x_status_content(tweet: dict) -> str:
+    parts: list[str] = []
+    text = (tweet.get("text") or "").strip()
+    if text:
+        parts.append(text)
+    article = tweet.get("article") or {}
+    article_body = x_article_blocks_to_text(article.get("content"))
+    if article_body:
+        parts.append(article_body)
+    elif (article.get("preview_text") or "").strip():
+        parts.append(str(article["preview_text"]).strip())
+    return "\n\n".join(parts)
+
+
+def _fetch_x_status_api(tweet_id: str) -> dict | None:
+    for template in (_FXTWITTER_STATUS_API, _VXTWITTER_STATUS_API):
+        try:
+            resp = requests.get(
+                template.format(tweet_id=tweet_id),
+                timeout=(5, 20),
+                headers=_HEADERS,
+            )
+            if resp.status_code >= 400:
+                continue
+            payload = resp.json()
+        except Exception:
+            continue
+        tweet = payload.get("tweet")
+        if isinstance(tweet, dict):
+            return tweet
+    return None
+
+
+def _fetch_x_status(url: str) -> tuple[str, str]:
+    """Fetch X/Twitter status text via fxTwitter (fallback vxTwitter)."""
+    tweet_id = x_status_id(url)
+    if not tweet_id:
+        return _fetch_html_body(url)
+    tweet = _fetch_x_status_api(tweet_id)
+    if tweet is None:
+        return _fetch_html_body(url)
+    title = _x_status_title(tweet)
+    content = _x_status_content(tweet)
+    if not content.strip():
+        return _fetch_html_body(url)
+    return title, content
 
 
 def _fetch_metadata_only(url: str) -> tuple[str, str]:
@@ -174,6 +308,24 @@ def _fetch_metadata_only(url: str) -> tuple[str, str]:
     """
     _, title = _fetch_soup(url, timeout=(5, 10))
     return title, ""
+
+
+_MIN_ARXIV_HTML_CHARS = 300
+
+
+def _fetch_arxiv(url: str) -> tuple[str, str]:
+    """Fetch arXiv paper text from HTML; fall back to abstract page."""
+    paper_id = arxiv_paper_id(url)
+    if not paper_id:
+        return _fetch_html_body(url)
+    html_url = f"https://arxiv.org/html/{paper_id}"
+    try:
+        title, content = _fetch_html_body(html_url)
+        if len(content.strip()) >= _MIN_ARXIV_HTML_CHARS:
+            return title, content
+    except Exception:
+        pass
+    return _fetch_html_body(f"https://arxiv.org/abs/{paper_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +356,28 @@ SKIP_TYPES: frozenset[str] = frozenset(
 _CLOUDFLARE_TITLE_MARKER = "just a moment"
 _CLOUDFLARE_BODY_MARKERS = ("enable javascript and cookies to continue",)
 
+_HOST_UNRESOLVED_RE = re.compile(r"host='([^']+)'")
+
+
+def _format_fetch_error(exc: BaseException) -> str:
+    """Short, log-friendly error text (avoid urllib3 stack dumps)."""
+    msg = str(exc)
+    if msg.startswith("No connection adapters were found for 'mailto:"):
+        return "mailto link"
+    if "CERTIFICATE_VERIFY_FAILED" in msg or "SSLError" in msg:
+        return "SSL certificate verification failed"
+    if "Read timed out" in msg or "ConnectTimeout" in msg:
+        return "timeout"
+    if "NameResolutionError" in msg or "Failed to resolve" in msg:
+        match = _HOST_UNRESOLVED_RE.search(msg)
+        if match:
+            return f"unresolved host ({match.group(1)})"
+        return "DNS failure"
+    if len(msg) > 160:
+        return msg[:157] + "..."
+    return msg
+
+
 # ---------------------------------------------------------------------------
 # Resource store (keyed by SHA-256 of the resolved URL)
 # ---------------------------------------------------------------------------
@@ -217,13 +391,128 @@ def _resource_dir() -> Path:
 
 
 def _url_stem(url: str) -> str:
-    """Stable filename stem derived from the canonical URL (UTM params stripped)."""
-    return hashlib.sha256(strip_utm_params(url).encode()).hexdigest()
+    """Stable filename stem derived from the canonical URL (UTM + fragment stripped)."""
+    return hashlib.sha256(canonical_resource_url(url).encode()).hexdigest()
+
+
+def _resource_json_paths(url: str) -> list[Path]:
+    """Candidate JSON paths for *url*, canonical key first then legacy aliases."""
+    resource_dir = _resource_dir()
+    raw = strip_utm_params(url or "")
+    stems = [_url_stem(url)]
+    legacy = hashlib.sha256(raw.encode()).hexdigest()
+    if legacy not in stems:
+        stems.append(legacy)
+    return [resource_dir / f"{stem}.json" for stem in stems]
 
 
 def has_resource(url: str) -> bool:
     """True if a FetchResult has been stored for *url*."""
-    return (_resource_dir() / f"{_url_stem(url)}.json").exists()
+    return any(path.exists() for path in _resource_json_paths(url))
+
+
+def _read_resource_json(json_path: Path) -> FetchResult | None:
+    if not json_path.exists():
+        return None
+    data: dict = json.loads(json_path.read_text(encoding="utf-8"))
+    data.pop("cited_by", None)  # stored alongside but not part of FetchResult
+    allowed = {f.name for f in fields(FetchResult)}
+    bullets = data.get("summary_bullets")
+    if bullets is None:
+        bullets = []
+    elif not isinstance(bullets, list):
+        bullets = []
+    filtered = {k: v for k, v in data.items() if k in allowed}
+    filtered.setdefault("summary_bullets", [str(b) for b in bullets if str(b).strip()])
+    result = FetchResult(**filtered)
+    result.title = fix_mojibake(result.title)
+    result.content = fix_mojibake(result.content)
+    return result
+
+
+def _has_mojibake(text: str) -> bool:
+    return bool(text) and ("â" in text or "Ã" in text)
+
+
+def _needs_resource_refresh(result: FetchResult) -> bool:
+    if _has_mojibake(result.content) or _has_mojibake(result.title):
+        return True
+    url = result.resolved_url or result.url or ""
+    if is_x_status_url(url) and _is_x_login_wall(result.content):
+        return True
+    return False
+
+
+def load_resource(url: str) -> FetchResult | None:
+    """Load a stored FetchResult for *url*, or ``None`` if not found."""
+    stem = _url_stem(url)
+    _hydrate_resource_from_object_store(stem)
+    for json_path in _resource_json_paths(url):
+        result = _read_resource_json(json_path)
+        if result is not None:
+            return result
+    return None
+
+
+def _linkedin_resource_prefix() -> str:
+    raw = (os.environ.get("LINKEDIN_RESOURCE_PREFIX") or "linkedin/resources").strip()
+    return raw.strip("/")
+
+
+def _object_store_config():
+    try:
+        from kg_vault.object_sync import s3_store_config_from_env
+    except ImportError:
+        return None
+    return s3_store_config_from_env(prefix=_linkedin_resource_prefix())
+
+
+def _hydrate_resource_from_object_store(stem: str) -> None:
+    cfg = _object_store_config()
+    if cfg is None:
+        return
+    try:
+        from kg_vault.object_sync import s3_download_file
+    except ImportError:
+        return
+    resource_dir = _resource_dir()
+    json_path = resource_dir / f"{stem}.json"
+    if not json_path.exists():
+        s3_download_file(cfg, f"{stem}.json", json_path)
+    md_path = resource_dir / f"{stem}.md"
+    if not md_path.exists():
+        s3_download_file(cfg, f"{stem}.md", md_path)
+
+
+def _mirror_resource_to_object_store(
+    stem: str, json_path: Path, md_path: Path | None
+) -> None:
+    cfg = _object_store_config()
+    if cfg is None:
+        return
+    try:
+        from kg_vault.object_sync import s3_upload_file
+    except ImportError:
+        return
+    s3_upload_file(cfg, json_path, f"{stem}.json")
+    if md_path is not None and md_path.is_file():
+        s3_upload_file(cfg, md_path, f"{stem}.md")
+
+
+def refresh_resource_if_corrupt(url: str) -> FetchResult | None:
+    """Load a resource, re-fetching from the web when mojibake survives repair."""
+    result = load_resource(url)
+    if result is None:
+        return None
+    if not _needs_resource_refresh(result):
+        return result
+    fetch_url = canonical_resource_url(result.resolved_url or result.url or url)
+    logger.info("refreshing corrupted resource cache for %s", fetch_url)
+    fresh = fetch_linked_content(fetch_url)
+    if fresh.ok:
+        save_resource(fetch_url, fresh)
+        return load_resource(url) or fresh
+    return result
 
 
 def save_resource(
@@ -248,14 +537,24 @@ def save_resource(
     existing_cited_by: list[str] = []
     if json_path.exists():
         try:
-            raw_cited = (
-                json.loads(json_path.read_text(encoding="utf-8")).get("cited_by") or []
-            )
+            existing_raw = json.loads(json_path.read_text(encoding="utf-8"))
+            raw_cited = existing_raw.get("cited_by") or []
             # Normalize legacy raw-URN entries (stored before hash-conversion fix)
             existing_cited_by = [
                 hashlib.sha256(e.encode()).hexdigest() if e.startswith("urn:") else e
                 for e in raw_cited
             ]
+            old_content = (existing_raw.get("content") or "").strip()
+            new_content = (result.content or "").strip()
+            if old_content and new_content and old_content != new_content:
+                result = replace(
+                    result,
+                    tldr="",
+                    summary_author="",
+                    summary_bullets=[],
+                    summary_model="",
+                    summarized_at="",
+                )
         except Exception:
             pass
 
@@ -263,25 +562,27 @@ def save_resource(
     # directly usable as filenames: content/<hash>.md / content/<hash>.meta.json
     new_hashes = [hashlib.sha256(u.encode()).hexdigest() for u in citing_post_urns if u]
     data = asdict(result)
-    # Strip UTM from url/resolved_url — the file is keyed by canonical URL anyway
-    data["url"] = strip_utm_params(data["url"])
-    data["resolved_url"] = strip_utm_params(data["resolved_url"])
+    data["url"] = canonical_resource_url(data["url"])
+    resolved = (data.get("resolved_url") or data["url"] or "").strip()
+    data["resolved_url"] = canonical_resource_url(resolved) if resolved else ""
     data["cited_by"] = list(dict.fromkeys(existing_cited_by + new_hashes))
     json_path.write_text(
         json.dumps(data, indent=0, ensure_ascii=False), encoding="utf-8"
     )
 
+    md_path: Path | None = None
     if result.content:
         md_path = resource_dir / f"{stem}.md"
         md_path.write_text(result.content, encoding="utf-8")
 
+    _mirror_resource_to_object_store(stem, json_path, md_path)
     return json_path
 
 
 def _update_resource_cited_by(url: str, urns: list[str]) -> None:
     """Merge *urns* into the ``cited_by`` list of an already-stored resource."""
-    json_path = _resource_dir() / f"{_url_stem(url)}.json"
-    if not json_path.exists() or not urns:
+    json_path = next((p for p in _resource_json_paths(url) if p.exists()), None)
+    if json_path is None or not urns:
         return
     try:
         data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -298,16 +599,6 @@ def _update_resource_cited_by(url: str, urns: list[str]) -> None:
         )
     except Exception:
         pass
-
-
-def load_resource(url: str) -> FetchResult | None:
-    """Load a stored FetchResult for *url*, or ``None`` if not found."""
-    json_path = _resource_dir() / f"{_url_stem(url)}.json"
-    if not json_path.exists():
-        return None
-    data: dict = json.loads(json_path.read_text(encoding="utf-8"))
-    data.pop("cited_by", None)  # stored alongside but not part of FetchResult
-    return FetchResult(**data)
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +624,12 @@ def fetch_linked_content(
         return FetchResult(url=url, error="ignored")
 
     resolved = resolve_redirect(url) if resolve_redirects else url
-    info = categorize_url(resolved)
+    fetch_url = rewrite_fetch_url(resolved)
+
+    if should_ignore_url(fetch_url):
+        return FetchResult(url=url, resolved_url=resolved, error="ignored")
+
+    info = categorize_url(fetch_url)
     url_type = info.get("type") or "article"
     domain = info.get("domain") or ""
 
@@ -346,11 +642,27 @@ def fetch_linked_content(
             error=f"skipped ({url_type})",
         )
 
-    logger.info("GET %s [%s]", resolved, url_type)
+    logger.info("GET %s [%s]", fetch_url, url_type)
     strategy = STRATEGIES.get(url_type, _fetch_html_body)
     try:
-        title, content = strategy(resolved)
+        if "arxiv.org" in fetch_url.lower():
+            title, content = _fetch_arxiv(fetch_url)
+        elif is_x_status_url(fetch_url):
+            title, content = _fetch_x_status(fetch_url)
+        else:
+            title, content = strategy(fetch_url)
+        title = fix_mojibake(title)
+        content = fix_mojibake(content)
         logger.info("  -> %s", title[:80] if title else "(no title)")
+        if not (title.strip() or content.strip()):
+            return FetchResult(
+                url=url,
+                resolved_url=resolved,
+                url_type=url_type,
+                domain=domain,
+                error="empty content",
+                fetched_at=datetime.now(timezone.utc).isoformat(),
+            )
         if _CLOUDFLARE_TITLE_MARKER in title.lower() or any(
             m in content.lower() for m in _CLOUDFLARE_BODY_MARKERS
         ):
@@ -372,15 +684,36 @@ def fetch_linked_content(
             fetched_at=datetime.now(timezone.utc).isoformat(),
         )
     except Exception as exc:
-        logger.warning("  -> failed: %s", exc)
+        err = _format_fetch_error(exc)
+        logger.warning("  -> failed: %s", err)
         return FetchResult(
             url=url,
             resolved_url=resolved,
             url_type=url_type,
             domain=domain,
-            error=str(exc),
+            error=err,
             fetched_at=datetime.now(timezone.utc).isoformat(),
         )
+
+
+def _process_one_url(
+    url: str,
+    *,
+    skip_cached: bool = True,
+    citing_post_urn: str = "",
+) -> FetchResult:
+    """Fetch (or load cached) a single URL and update ``cited_by`` when applicable."""
+    urns = [citing_post_urn] if citing_post_urn else []
+    if skip_cached and has_resource(url):
+        cached = load_resource(url)
+        if cached is not None:
+            if urns:
+                _update_resource_cited_by(url, urns)
+            return cached
+    result = fetch_linked_content(url)
+    if result.ok:
+        save_resource(url, result, citing_post_urns=urns)
+    return result
 
 
 def process_post_linked_content(
@@ -403,17 +736,11 @@ def process_post_linked_content(
     urns = [citing_post_urn] if citing_post_urn else []
     results: list[FetchResult] = []
     for url in urls:
-        if skip_cached and has_resource(url):
-            cached = load_resource(url)
-            if cached is not None:
-                if urns:
-                    _update_resource_cited_by(url, urns)
-                results.append(cached)
-                continue
-        result = fetch_linked_content(url)
-        if result.ok:
-            save_resource(url, result, citing_post_urns=urns)
-        results.append(result)
+        results.append(
+            _process_one_url(
+                url, skip_cached=skip_cached, citing_post_urn=citing_post_urn
+            )
+        )
     return results
 
 
@@ -442,7 +769,7 @@ def fetch_linked_content_streaming(
     canonical_to_raw: dict[str, str] = {}
     for post_urn, post_urls in _iter_posts_with_urls(urns=urns):
         for url in post_urls:
-            canon = strip_utm_params(url)
+            canon = canonical_resource_url(url)
             if canon not in url_to_urns:
                 url_to_urns[canon] = []
                 canonical_to_raw[canon] = url
@@ -483,14 +810,14 @@ def _urls_from_metadata(meta: dict) -> list[str]:
     seen: set[str] = set()
     for u in meta.get("urls") or []:
         s = str(u).strip()
-        if s and s not in seen:
+        if s and s not in seen and not should_ignore_url(s):
             seen.add(s)
             out.append(s)
     for m in meta.get("mentions") or []:
         if not isinstance(m, dict):
             continue
         u = str(m.get("url") or "").strip()
-        if u and u not in seen:
+        if u and u not in seen and not should_ignore_url(u):
             seen.add(u)
             out.append(u)
     return out
@@ -545,6 +872,46 @@ def _iter_posts_with_urls(urns: set[str] | None = None):
         yield urn, urls
 
 
+def _collect_post_url_jobs(limit_posts: int | None = None) -> list[tuple[str, str]]:
+    """Return ``(citing_post_urn, url)`` pairs in post order for CLI progress."""
+    jobs: list[tuple[str, str]] = []
+    posts = 0
+    for urn, urls in _iter_posts_with_urls():
+        if limit_posts is not None and posts >= limit_posts:
+            break
+        for url in urls:
+            jobs.append((urn, url))
+        posts += 1
+    return jobs
+
+
+def _record_fetch_result(
+    res: FetchResult,
+    *,
+    quiet: bool,
+    verbose: bool,
+    counts: dict[str, int],
+) -> None:
+    """Update *counts* and optionally print one result line."""
+    if res.error == "ignored" or res.error.startswith("skipped"):
+        counts["skipped"] += 1
+        if verbose and not quiet:
+            print(f"   ⏭  {res.url}  ({res.error})")
+    elif res.ok:
+        counts["fetched"] += 1
+        if verbose and not quiet:
+            print(
+                f"   ✅ {res.resolved_url or res.url}  [{res.url_type}] {res.title!r}"
+            )
+    else:
+        counts["failed"] += 1
+        line = f"   ❌ {res.url}  {res.error}"
+        if verbose and not quiet:
+            print(line)
+        else:
+            tqdm.write(line, file=sys.stderr)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Fetch content from URLs linked in LinkedIn posts/comments.",
@@ -566,48 +933,90 @@ def main() -> int:
         action="store_true",
         help="Show what would be fetched without actually fetching.",
     )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Hide successes and skips (still shows failures and progress).",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Per-post/per-URL lines and INFO fetch logs (disables progress bar).",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable the progress bar (for logs or scripting).",
+    )
     args = parser.parse_args()
 
-    posts_processed = 0
-    urls_fetched = 0
-    urls_failed = 0
-    urls_skipped = 0
+    if args.quiet and args.verbose:
+        print("Use only one of --quiet or --verbose", file=sys.stderr)
+        return 2
 
-    for urn, urls in _iter_posts_with_urls():
-        if args.limit and posts_processed >= args.limit:
-            break
+    logging.basicConfig(
+        level=logging.INFO if args.verbose else logging.WARNING,
+        format="%(levelname)s %(message)s",
+        stream=sys.stderr,
+    )
 
-        label = urn or "(unknown URN)"
-        print(f"\n📄 {label}  ({len(urls)} URL(s))")
+    counts = {"fetched": 0, "skipped": 0, "failed": 0}
 
-        if args.dry_run:
+    if args.dry_run:
+        posts_processed = 0
+        for urn, urls in _iter_posts_with_urls():
+            if args.limit and posts_processed >= args.limit:
+                break
+            label = urn or "(unknown URN)"
+            print(f"\n📄 {label}  ({len(urls)} URL(s))")
             for url in urls:
                 cached = " [cached]" if has_resource(url) else ""
                 print(f"   {url}{cached}")
             posts_processed += 1
-            continue
+        print(f"\n✨ Done — {posts_processed} post(s) listed (dry run).")
+        return 0
 
-        results = process_post_linked_content(urls, skip_cached=args.skip_cached)
-        for res in results:
-            if res.error == "ignored" or res.error.startswith("skipped"):
-                urls_skipped += 1
-                print(f"   ⏭  {res.url}  ({res.error})")
-            elif res.ok:
-                urls_fetched += 1
-                print(
-                    f"   ✅ {res.resolved_url or res.url}  [{res.url_type}] {res.title!r}"
+    jobs = _collect_post_url_jobs(limit_posts=args.limit)
+    posts_processed = len({urn for urn, _ in jobs})
+    use_progress = not args.no_progress and not args.verbose
+
+    if args.verbose:
+        current_urn: str | None = None
+        for urn, url in jobs:
+            if urn != current_urn:
+                current_urn = urn
+                label = urn or "(unknown URN)"
+                print(f"\n📄 {label}")
+            res = _process_one_url(
+                url, skip_cached=args.skip_cached, citing_post_urn=urn
+            )
+            _record_fetch_result(res, quiet=args.quiet, verbose=True, counts=counts)
+    else:
+        bar = tqdm(
+            jobs,
+            desc="Fetching URLs",
+            unit="url",
+            disable=not use_progress,
+            file=sys.stderr,
+        )
+        for urn, url in bar:
+            res = _process_one_url(
+                url, skip_cached=args.skip_cached, citing_post_urn=urn
+            )
+            _record_fetch_result(res, quiet=args.quiet, verbose=False, counts=counts)
+            if use_progress:
+                bar.set_postfix(
+                    ok=counts["fetched"],
+                    skip=counts["skipped"],
+                    fail=counts["failed"],
+                    refresh=False,
                 )
-            else:
-                urls_failed += 1
-                print(f"   ❌ {res.url}  {res.error}")
-
-        posts_processed += 1
 
     print(
         f"\n✨ Done — {posts_processed} post(s) processed, "
-        f"{urls_fetched} URL(s) fetched, "
-        f"{urls_skipped} skipped, "
-        f"{urls_failed} failed."
+        f"{counts['fetched']} URL(s) fetched, "
+        f"{counts['skipped']} skipped, "
+        f"{counts['failed']} failed."
     )
     return 0
 

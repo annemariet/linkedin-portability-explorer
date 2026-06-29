@@ -77,6 +77,17 @@ class TestFetchLinkedContent:
         )
         assert result.error == "ignored"
 
+    def test_ignores_resolved_mailto_target(self):
+        with patch(
+            "linkedin_api.fetch_linked_content.resolve_redirect",
+            return_value="mailto:jobs@example.com",
+        ):
+            result = fetch_linked_content(
+                "https://www.linkedin.com/redir/redirect?url=mailto%3Ajobs%40example.com",
+                resolve_redirects=True,
+            )
+        assert result.error == "ignored"
+
     def test_skips_image_url(self):
         """Image URLs (detected by extension) should be skipped without an HTTP fetch."""
         result = fetch_linked_content(
@@ -92,6 +103,55 @@ class TestFetchLinkedContent:
         )
         assert "skipped" in result.error
         assert result.ok is False
+
+    def test_arxiv_pdf_fetches_html_page(self):
+        html = (
+            "<html><head>"
+            '<meta property="og:title" content="Agentic Auto-Scheduling"/>'
+            "</head><body><p>" + ("Full paper paragraph. " * 40) + "</p></body></html>"
+        )
+        with patch("requests.get", return_value=_mock_get_response(html)) as mock_get:
+            result = fetch_linked_content(
+                "https://arxiv.org/pdf/2511.00592", resolve_redirects=False
+            )
+
+        assert result.ok is True
+        assert result.title == "Agentic Auto-Scheduling"
+        assert "Full paper paragraph." in result.content
+        assert mock_get.call_args[0][0] == "https://arxiv.org/html/2511.00592"
+
+    def test_arxiv_pdf_falls_back_to_abs_when_html_sparse(self):
+        sparse = "<html><body>HTML not available for this paper.</body></html>"
+        abs_html = (
+            "<html><head>"
+            '<meta property="og:title" content="From Abs"/>'
+            "</head><body><p>Abstract with enough text for fallback.</p></body></html>"
+        )
+
+        def side_effect(url, **kwargs):
+            if "/html/" in url:
+                return _mock_get_response(sparse)
+            return _mock_get_response(abs_html)
+
+        with patch("requests.get", side_effect=side_effect):
+            result = fetch_linked_content(
+                "https://arxiv.org/pdf/2511.00592", resolve_redirects=False
+            )
+
+        assert result.ok is True
+        assert result.title == "From Abs"
+        assert "Abstract with enough text" in result.content
+
+    def test_rejects_binary_pdf_body(self):
+        with patch(
+            "requests.get",
+            return_value=_mock_get_response("%PDF-1.7 binary"),
+        ):
+            result = fetch_linked_content(
+                "https://example.com/not-really-html", resolve_redirects=False
+            )
+        assert not result.ok
+        assert result.error
 
     def test_successful_html_fetch(self):
         html = (
@@ -351,6 +411,78 @@ class TestResourceStore:
     def test_load_missing_returns_none(self):
         assert load_resource("https://example.com/missing") is None
 
+    def test_load_resource_finds_fragment_url_via_canonical_key(self, tmp_path):
+        url = "https://example.com/article#section"
+        save_resource(
+            url,
+            FetchResult(
+                url=url,
+                resolved_url=url,
+                title="Title",
+                content="Body",
+            ),
+        )
+        loaded = load_resource("https://example.com/article")
+        assert loaded is not None
+        assert loaded.content == "Body"
+
+    def test_refresh_resource_if_corrupt_refetches(self, tmp_path):
+        from linkedin_api.fetch_linked_content import refresh_resource_if_corrupt
+
+        url = "https://example.com/article"
+        broken = "OpenAI wonâ\x80\x99t".encode("utf-8").decode("latin-1")
+        save_resource(
+            url,
+            FetchResult(url=url, resolved_url=url, title=broken, content=broken),
+        )
+        fresh_html = (
+            "<html><head><title>Fixed Title</title></head>"
+            "<body><p>Fixed body with enough text for a valid article fetch.</p></body></html>"
+        )
+        with patch(
+            "requests.get",
+            return_value=_mock_get_response(fresh_html),
+        ):
+            refreshed = refresh_resource_if_corrupt(url)
+        assert refreshed is not None
+        assert refreshed.title == "Fixed Title"
+        assert "Fixed body" in refreshed.content
+        assert "â" not in refreshed.content
+
+    def test_fetch_x_status_uses_fxtwitter_api(self, tmp_path):
+        payload = {
+            "tweet": {
+                "text": "",
+                "author": {"name": "Akshay 🚀", "screen_name": "akshay_pachaar"},
+                "article": {
+                    "title": "Loop Engineering Clearly Explained",
+                    "content": {
+                        "blocks": [
+                            {
+                                "type": "unstyled",
+                                "text": "Stop prompting your agents.",
+                                "inlineStyleRanges": [],
+                            }
+                        ],
+                        "entityMap": [],
+                    },
+                },
+            }
+        }
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = payload
+
+        with patch("requests.get", return_value=mock_resp):
+            result = fetch_linked_content(
+                "https://x.com/akshay_pachaar/status/2069118430582866051",
+                resolve_redirects=False,
+            )
+
+        assert result.ok is True
+        assert result.title == "Loop Engineering Clearly Explained"
+        assert "Stop prompting your agents." in result.content
+
     def test_save_writes_md_file(self, tmp_path):
         url = "https://example.com/md-test"
         result = FetchResult(url=url, content="markdown content", title="T")
@@ -442,7 +574,7 @@ class TestIterPostsWithUrls:
         assert urls == ["https://example.com/article"]
 
     def test_yields_mention_urls_with_resource_urls(self):
-        """``mentions[].url`` are included for fetch alongside ``urls``."""
+        """LinkedIn mention URLs are filtered; only external resources are fetched."""
         save_content(self.URN, "x")
         save_metadata(
             self.URN,
@@ -454,8 +586,7 @@ class TestIterPostsWithUrls:
 
         results = list(_iter_posts_with_urls())
         _, urls = results[0]
-        assert "https://example.com/resource" in urls
-        assert "https://www.linkedin.com/company/acme" in urls
+        assert urls == ["https://example.com/resource"]
 
     def test_extracts_urls_from_md_when_metadata_urls_empty(self):
         """When urls field is absent, URLs are extracted from the .md content."""

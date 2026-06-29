@@ -27,7 +27,11 @@ dependencies = [
     "trafilatura==2.0.0",
     "python-dotenv==1.2.1",
     "tqdm==4.67.1",
+    "kg-vault",
 ]
+
+[tool.uv.sources]
+kg-vault = { path = "../kg-vault", editable = true }
 
 [project.optional-dependencies]
 llm = [
@@ -39,10 +43,14 @@ ui = [
     "linkedin-portability[llm]",
     "gradio==6.1.0",
 ]
+s3 = [
+    "boto3==1.38.36",
+]
 
 [project.scripts]
 linkedin-pipeline = "linkedin_api.run_pipeline:main"
 linkedin-gradio = "linkedin_api.gradio_app:main"
+linkedin-fetch-content = "linkedin_api.fetch_linked_content:main"
 
 [project.urls]
 Homepage = "https://github.com/annemariet/linkedin-graph-rag"
