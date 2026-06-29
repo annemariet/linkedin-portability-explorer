@@ -14,4 +14,11 @@ def test_resolve_mammouth_chat_model_rewrites_gemini_25():
 
 
 def test_resolve_mammouth_chat_model_keeps_gpt():
-    assert resolve_mammouth_chat_model("gpt-5-nano", quiet=True) == "gpt-5-nano"
+    assert resolve_mammouth_chat_model("gpt-5.4-nano", quiet=True) == "gpt-5.4-nano"
+
+
+def test_resolve_mammouth_chat_model_rewrites_deprecated_gpt5_nano():
+    assert (
+        resolve_mammouth_chat_model("gpt-5-nano", quiet=True)
+        == OPENAI_COMPAT_DEFAULT_MODEL
+    )

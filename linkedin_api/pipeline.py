@@ -14,9 +14,9 @@ from linkedin_api.activity_extract import (
 )
 from linkedin_api.enrich_activities import enrich_activities
 from linkedin_api.enriched_record import EnrichedRecord
-from linkedin_api.fetch_linked_content import fetch_linked_content_streaming
 from linkedin_api.summarize_activity import collect_from_csv, ensure_csv_fetched
 from linkedin_api.summarize_posts import summarize_posts
+from linkedin_api.summarize_resources import summarize_resources
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +28,7 @@ class PipelineOptions:
     limit: int | None = None
     batch_size: int = 5
     quiet: bool = False
+    force_resummarize: bool = False
 
 
 def collect_period(
@@ -73,6 +74,9 @@ def fetch_linked_urls(
     urns: set[str] | None = None,
 ) -> int:
     """Fetch linked URL content for posts in scope. Returns URLs fetched."""
+    # Lazy import: eager import breaks ``python -m linkedin_api.fetch_linked_content``.
+    from linkedin_api.fetch_linked_content import fetch_linked_content_streaming
+
     gen = fetch_linked_content_streaming(
         limit=options.limit, skip_cached=True, urns=urns
     )
@@ -83,11 +87,36 @@ def fetch_linked_urls(
         return e.value or 0
 
 
+def summarize_linked_resources(
+    options: PipelineOptions,
+    *,
+    llm_provider: str | None = None,
+    llm_model: str | None = None,
+    urns: set[str] | None = None,
+) -> int:
+    """Summarize fetched linked articles lacking LLM summary."""
+    n = summarize_resources(
+        limit=options.limit,
+        quiet=options.quiet,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        force_resummarize=options.force_resummarize,
+        urns=urns,
+    )
+    if not options.quiet:
+        if n == 0:
+            print("Summarized 0 linked articles.")
+        else:
+            print(f"Summarized {n} linked articles.")
+    return n
+
+
 def summarize_records(
     options: PipelineOptions,
     *,
     llm_provider: str | None = None,
     llm_model: str | None = None,
+    urns: set[str] | None = None,
 ) -> int:
     """Summarize posts lacking summary metadata. Returns count summarized."""
     n = summarize_posts(
@@ -96,6 +125,8 @@ def summarize_records(
         quiet=options.quiet,
         llm_provider=llm_provider,
         llm_model=llm_model,
+        force_resummarize=options.force_resummarize,
+        urns=urns,
     )
     if not options.quiet:
         if n == 0:
@@ -121,12 +152,23 @@ def run_pipeline(
     enriched = enrich_records(activities, limit=opts.limit, quiet=opts.quiet)
     urns = {rec.post_urn for rec in activities if rec.post_urn}
     urls_fetched = fetch_linked_urls(opts, urns=urns)
-    summarized = summarize_records(opts, llm_provider=llm_provider, llm_model=llm_model)
+    if not opts.quiet and urns:
+        print(f"Summarize scope: {len(urns)} post URNs from period")
+    summarized = summarize_records(
+        opts, llm_provider=llm_provider, llm_model=llm_model, urns=urns or None
+    )
+    articles_summarized = summarize_linked_resources(
+        opts,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        urns=urns or None,
+    )
     stats = {
         "collected": collected,
         "enriched": enriched,
         "urls_fetched": urls_fetched,
         "summarized": summarized,
+        "articles_summarized": articles_summarized,
     }
     return activities, stats
 
@@ -140,5 +182,6 @@ __all__ = [
     "get_all_post_activities",
     "parse_period",
     "run_pipeline",
+    "summarize_linked_resources",
     "summarize_records",
 ]

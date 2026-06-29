@@ -202,6 +202,9 @@ _META_KEYS = (
     "activity_time_iso",
     "post_created_at",
     "enrichment_version",
+    "tldr",
+    "summary_bullets",
+    "summary_model",
 )
 
 
@@ -535,6 +538,10 @@ def update_summary_metadata(
     technologies: list[str],
     people: list[str],
     category: str | None,
+    *,
+    tldr: str = "",
+    summary_bullets: list[str] | None = None,
+    summary_model: str = "",
 ) -> Path:
     """Update metadata with LLM summary. Preserves urls, post_url from enrichment."""
     meta = dict(load_metadata(urn) or {})
@@ -543,6 +550,9 @@ def update_summary_metadata(
     meta["technologies"] = technologies
     meta["people"] = people
     meta["category"] = category or ""
+    meta["tldr"] = (tldr or "").strip()
+    meta["summary_bullets"] = list(summary_bullets or [])
+    meta["summary_model"] = (summary_model or "").strip()
     meta["summarized_at"] = datetime.now(timezone.utc).isoformat()
     path = _meta_path(urn)
     path.write_text(json.dumps(meta, indent=0), encoding="utf-8")
@@ -565,14 +575,37 @@ def has_metadata(urn: str) -> bool:
     return bool(urn) and _meta_path(urn).exists()
 
 
+def post_summary_complete(
+    meta: dict[str, Any] | None,
+    *,
+    content_len: int | None = None,
+) -> bool:
+    """True when TLDR exists and summary body exists (or TLDR-only for very short posts)."""
+    if not meta:
+        return False
+    if not (meta.get("tldr") or "").strip():
+        return False
+    bullets = meta.get("summary_bullets")
+    if isinstance(bullets, list) and any(str(b).strip() for b in bullets):
+        return True
+    if (meta.get("summary") or "").strip():
+        return True
+    if (
+        content_len is not None
+        and content_len < 200
+        and (meta.get("summarized_at") or "").strip()
+    ):
+        return True
+    return False
+
+
 def needs_summary(urn: str) -> bool:
-    """True if urn has content but no metadata (or empty summary)."""
+    """True if urn has content but summary metadata is missing or incomplete."""
     if not has_content(urn):
         return False
     meta = load_metadata(urn)
-    if meta is None:
-        return True
-    return not (meta.get("summary") or "").strip()
+    content_len = len(load_content(urn) or "")
+    return not post_summary_complete(meta, content_len=content_len)
 
 
 def _load_registry() -> dict[str, str]:
@@ -625,8 +658,19 @@ def list_summarized_metadata(limit: int | None = None) -> list[dict[str, Any]]:
     return out
 
 
-def list_posts_needing_summary(limit: int | None = None) -> list[dict[str, Any]]:
-    """URNs with content (≥50 chars) but no summary. Returns [{urn, content}, ...]."""
+def list_posts_for_summary(
+    limit: int | None = None,
+    *,
+    force: bool = False,
+    urns: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Posts with content (≥50 chars).
+
+    Skips posts with complete summary metadata (TLDR + bullets/summary text).
+    With *force*, re-summarize even when complete.
+    When *urns* is set, only posts whose URN is in that set are considered
+    (e.g. pipeline period scope). Without *urns*, scans the whole content store.
+    """
     out: list[dict[str, Any]] = []
     content_dir = _content_dir()
     registry = _load_registry()
@@ -636,16 +680,24 @@ def list_posts_needing_summary(limit: int | None = None) -> list[dict[str, Any]]
         if len(content) < 50:
             continue
         meta_path = content_dir / f"{stem}.meta.json"
-        if meta_path.exists():
+        if meta_path.exists() and not force:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            if (meta.get("summary") or "").strip():
+            if post_summary_complete(meta, content_len=len(content)):
                 continue
         urn = registry.get(stem)
-        if urn:
-            out.append({"urn": urn, "content": content})
+        if not urn:
+            continue
+        if urns is not None and urn not in urns:
+            continue
+        out.append({"urn": urn, "content": content})
         if limit and len(out) >= limit:
             break
     return out
+
+
+def list_posts_needing_summary(limit: int | None = None) -> list[dict[str, Any]]:
+    """URNs with content (≥50 chars) but no LLM summary."""
+    return list_posts_for_summary(limit=limit, force=False)
 
 
 def _register_urn(urn: str) -> None:
