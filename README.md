@@ -54,7 +54,7 @@ Downstream consumers (e.g. private vault export in amai-lab) should depend on th
 As a library dependency:
 
 ```bash
-pip install "linkedin-portability @ git+https://github.com/annemariet/linkedin-graph-rag.git"
+pip install "linkedin-portability @ git+https://github.com/annemariet/linkedin-portability-explorer.git"
 ```
 
 ### 2. Get LinkedIn Access Token

@@ -45,9 +45,9 @@ linkedin-pipeline = "linkedin_api.run_pipeline:main"
 linkedin-gradio = "linkedin_api.gradio_app:main"
 
 [project.urls]
-Homepage = "https://github.com/annemariet/linkedin-graph-rag"
-Repository = "https://github.com/annemariet/linkedin-graph-rag"
-Issues = "https://github.com/annemariet/linkedin-graph-rag/issues"
+Homepage = "https://github.com/annemariet/linkedin-portability-explorer"
+Repository = "https://github.com/annemariet/linkedin-portability-explorer"
+Issues = "https://github.com/annemariet/linkedin-portability-explorer/issues"
 
 [dependency-groups]
 dev = [
