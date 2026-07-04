@@ -1,8 +1,8 @@
 """Tests for comment vs post routing (_is_comment_like_activity and extract_entities_and_relationships)."""
 
-from linkedin_api.extract_graph_data import (
+from linkedin_api.activity_extract import (
     _is_comment_like_activity,
-    extract_entities_and_relationships,
+    extract_activity_records,
 )
 
 
@@ -29,7 +29,7 @@ def test_is_comment_like_activity_no_message_returns_false():
 
 
 def test_comment_like_under_post_resource_routes_to_comment():
-    """When resourceName is ugcPosts but activity is comment-like, routes to process_comment."""
+    """When resourceName is ugcPosts but activity is comment-like, type is comment."""
     element = {
         "resourceName": "ugcPosts",
         "actor": "urn:li:person:abc",
@@ -40,7 +40,6 @@ def test_comment_like_under_post_resource_routes_to_comment():
             "created": {"time": 1766750428159},
         },
     }
-    result = extract_entities_and_relationships([element])
-    nodes = result["nodes"]
-    comment_nodes = [n for n in nodes if n.get("label") == "Comment"]
-    assert len(comment_nodes) >= 1
+    records = extract_activity_records([element])
+    assert len(records) == 1
+    assert records[0].activity_type == "comment"

@@ -42,7 +42,7 @@ from linkedin_api.pipeline_report import (
 )
 from linkedin_api.activity_csv import get_default_csv_path
 from linkedin_api.run_pipeline import run_pipeline_ui_streaming
-from linkedin_api.summarize_activity import _parse_last
+from linkedin_api.period import parse_period
 
 logger = logging.getLogger(__name__)
 
@@ -442,7 +442,7 @@ def create_pipeline_interface():
                 lim,
             )
             last_clean = (last or "").strip()
-            if _parse_last(last_clean) is None:
+            if parse_period(last_clean) is None:
                 err = f"Invalid period '{last}'. {PERIOD_SYNTAX}"
                 yield _pipeline_run_outputs(
                     _render_pipeline_status("Invalid period", (0, 0.0)),

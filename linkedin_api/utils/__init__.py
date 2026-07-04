@@ -13,6 +13,9 @@ from linkedin_api.utils.auth import get_access_token, build_linkedin_session
 from linkedin_api.utils.changelog import (
     BASE_URL,
     fetch_changelog_data,
+    get_last_processed_timestamp,
+    get_max_processed_at,
+    save_last_processed_timestamp,
 )
 from linkedin_api.utils.urns import (
     extract_urn_id,

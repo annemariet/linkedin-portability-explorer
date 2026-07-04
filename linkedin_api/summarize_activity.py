@@ -12,7 +12,7 @@ and report scoping; this CLI only fetches and reports counts (data lives in CSV)
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from linkedin_api.activity_csv import (
@@ -21,11 +21,12 @@ from linkedin_api.activity_csv import (
     get_default_csv_path,
     load_records_csv,
 )
-from linkedin_api.enriched_record import EnrichedRecord
-from linkedin_api.extract_graph_data import (
+from linkedin_api.activity_extract import (
     extract_activity_records,
     get_all_post_activities,
 )
+from linkedin_api.enriched_record import EnrichedRecord
+from linkedin_api.period import parse_period
 from linkedin_api.utils.changelog import (
     get_max_processed_at,
     save_last_processed_timestamp,
@@ -33,24 +34,8 @@ from linkedin_api.utils.changelog import (
 
 
 def _parse_last(value: str) -> int | None:
-    """Convert '7d', '14d', '30d' to start_time in epoch milliseconds."""
-    if not value or len(value) < 2:
-        return None
-    try:
-        n = int(value[:-1])
-    except ValueError:
-        return None
-    unit = value[-1].lower()
-    if unit == "d":
-        delta = timedelta(days=n)
-    elif unit == "w":
-        delta = timedelta(weeks=n)
-    elif unit == "m":
-        delta = timedelta(days=n * 30)
-    else:
-        return None
-    cutoff = datetime.now(timezone.utc) - delta
-    return int(cutoff.timestamp() * 1000)
+    """Convert period string to start_time in epoch milliseconds."""
+    return parse_period(value)
 
 
 def ensure_csv_fetched(

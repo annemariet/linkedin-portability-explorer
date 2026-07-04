@@ -154,7 +154,9 @@ class TestTimestampPersistence:
         """Test that invalid timestamp file falls back to default (don't lose data)."""
         with TemporaryDirectory() as tmpdir:
             test_file = Path(tmpdir) / ".last_run"
-            with patch("linkedin_api.utils.changelog.LAST_RUN_FILE", test_file):
+            with patch(
+                "linkedin_api.utils.changelog._last_run_file", return_value=test_file
+            ):
                 # Write invalid timestamp (too old)
                 test_file.write_text("1000000000000")
                 assert get_last_processed_timestamp() is None
@@ -173,8 +175,10 @@ class TestTimestampPersistence:
         """Test saving and loading valid timestamp."""
         with TemporaryDirectory() as tmpdir:
             test_file = Path(tmpdir) / ".last_run"
-            with patch("linkedin_api.utils.changelog.LAST_RUN_FILE", test_file):
-                timestamp = 1765906726844
+            with patch(
+                "linkedin_api.utils.changelog._last_run_file", return_value=test_file
+            ):
+                timestamp = int(time() * 1000) - (2 * 24 * 60 * 60 * 1000)
                 save_last_processed_timestamp(timestamp)
                 assert get_last_processed_timestamp() == timestamp
 

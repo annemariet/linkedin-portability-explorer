@@ -6,30 +6,48 @@ build-backend = "hatchling.build"
 packages = ["linkedin_api"]
 
 [project]
-name = "linkedin-api-client"
-version = "0.3.0"
-description = "Python client for LinkedIn Portability API"
+name = "linkedin-portability"
+version = "0.4.0"
+description = "LinkedIn Member Data Portability client — activity fetch, content store, and optional LLM enrichment"
 readme = "README.md"
+license = { file = "LICENSE.md" }
 requires-python = ">=3.12"
-keywords = ["linkedin", "api", "rest.li"]
+keywords = ["linkedin", "portability", "dma"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Typing :: Typed",
 ]
 dependencies = [
-    "requests",
-    "keyring",
-    "beautifulsoup4>=4.12",
-    "trafilatura>=2.0",
-    "python-dotenv>=1.0",
-    "neo4j==5.28.2",
-    "neo4j-graphrag[google,openai]>=1.10.1",
-    "gradio>=4.0.0",
-    "anthropic>=0.84.0",
-    "ollama>=0.6.1",
-    "tqdm>=4.67",
+    "requests==2.32.5",
+    "keyring==25.7.0",
+    "beautifulsoup4==4.14.3",
+    "trafilatura==2.0.0",
+    "python-dotenv==1.2.1",
+    "tqdm==4.67.1",
 ]
+
+[project.optional-dependencies]
+llm = [
+    "openai==1.109.1",
+    "anthropic==0.84.0",
+    "ollama==0.6.1",
+]
+ui = [
+    "linkedin-portability[llm]",
+    "gradio==6.1.0",
+]
+
+[project.scripts]
+linkedin-pipeline = "linkedin_api.run_pipeline:main"
+linkedin-gradio = "linkedin_api.gradio_app:main"
+
+[project.urls]
+Homepage = "https://github.com/annemariet/linkedin-portability-explorer"
+Repository = "https://github.com/annemariet/linkedin-portability-explorer"
+Issues = "https://github.com/annemariet/linkedin-portability-explorer/issues"
 
 [dependency-groups]
 dev = [
@@ -45,6 +63,10 @@ dev = [
     "twine",
     "types-requests>=2.32.4.20260107",
     "types-tqdm>=4.67.3.20260205",
+    "openai==1.109.1",
+    "anthropic==0.84.0",
+    "ollama==0.6.1",
+    "gradio==6.1.0",
 ]
 
 [tool.black]
