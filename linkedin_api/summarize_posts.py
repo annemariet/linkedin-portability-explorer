@@ -18,6 +18,7 @@ from linkedin_api.summary_text import (
     build_post_user_prompt,
     parse_summary_response,
 )
+from linkedin_api.topic_tags import topics_to_catalog_tags
 
 BATCH_SIZE = 5
 
@@ -44,6 +45,7 @@ def _summarize_one(post: dict[str, Any], llm, *, model_id: str) -> bool:
         parsed = parse_summary_response(content)
         if not parsed.ok:
             return False
+        catalog_tags = topics_to_catalog_tags(parsed.topics, llm=llm, quiet=True)
         update_summary_metadata(
             urn,
             summary=parsed.summary_text,
@@ -54,6 +56,7 @@ def _summarize_one(post: dict[str, Any], llm, *, model_id: str) -> bool:
             tldr=parsed.tldr,
             summary_bullets=parsed.bullets,
             summary_model=model_id,
+            catalog_tags=catalog_tags,
         )
         return True
     except Exception as exc:

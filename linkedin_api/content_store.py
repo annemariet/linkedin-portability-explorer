@@ -205,6 +205,7 @@ _META_KEYS = (
     "tldr",
     "summary_bullets",
     "summary_model",
+    "catalog_tags",
 )
 
 
@@ -542,6 +543,7 @@ def update_summary_metadata(
     tldr: str = "",
     summary_bullets: list[str] | None = None,
     summary_model: str = "",
+    catalog_tags: list[str] | None = None,
 ) -> Path:
     """Update metadata with LLM summary. Preserves urls, post_url from enrichment."""
     meta = dict(load_metadata(urn) or {})
@@ -553,6 +555,8 @@ def update_summary_metadata(
     meta["tldr"] = (tldr or "").strip()
     meta["summary_bullets"] = list(summary_bullets or [])
     meta["summary_model"] = (summary_model or "").strip()
+    if catalog_tags is not None:
+        meta["catalog_tags"] = [str(t).strip() for t in catalog_tags if str(t).strip()]
     meta["summarized_at"] = datetime.now(timezone.utc).isoformat()
     path = _meta_path(urn)
     path.write_text(json.dumps(meta, indent=0), encoding="utf-8")

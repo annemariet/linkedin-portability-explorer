@@ -22,7 +22,8 @@ POST_SYSTEM_PROMPT = (
     "   - Medium post: 1–2 bullets.\n"
     "   - Long post (roughly 800+ characters): up to 4 bullets; never pad with filler.\n"
     "   Each bullet is one or two sentences in Markdown. Use **bold** for critical terms where helpful.\n"
-    "4) Last line: TOPICS: <comma-separated themes, 1-5 items; same language as the post>\n"
+    "4) Last line: TOPICS: <comma-separated themes, 1-5 items; always in English, "
+    "even when the post is in another language>\n"
     "Do not invent facts."
 )
 
