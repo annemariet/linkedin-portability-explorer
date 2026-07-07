@@ -976,6 +976,18 @@ def main() -> int:
                 cached = " [cached]" if has_resource(url) else ""
                 print(f"   {url}{cached}")
             posts_processed += 1
+        if posts_processed == 0:
+            total_posts = sum(1 for _ in _content_dir().glob("*.meta.json"))
+            if total_posts == 0:
+                print(
+                    f"\n⚠️  No posts in the content store ({_content_dir()}). "
+                    "Run collect+enrich first, e.g. `linkedin-pipeline --last 7d`."
+                )
+            else:
+                print(
+                    f"\n⚠️  {total_posts} post(s) in the content store, "
+                    "but none have extractable URLs."
+                )
         print(f"\n✨ Done — {posts_processed} post(s) listed (dry run).")
         return 0
 
