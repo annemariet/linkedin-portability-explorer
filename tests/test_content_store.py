@@ -248,7 +248,7 @@ class TestDownloadImageToStore:
         resp.content = content
         return resp
 
-    def test_defaults_to_content_dir(self):
+    def test_downloads_to_content_dir(self):
         with patch("requests.get", return_value=self._mock_response()):
             path = download_image_to_store("https://cdn.example.com/photo.jpg")
 
@@ -256,45 +256,25 @@ class TestDownloadImageToStore:
         assert path.startswith("images/")
         assert (get_data_dir() / "content" / path).exists()
 
-    def test_uses_given_base_dir(self, tmp_path):
-        custom_dir = tmp_path / "resources"
-        with patch("requests.get", return_value=self._mock_response()):
-            path = download_image_to_store(
-                "https://cdn.example.com/photo.jpg", base_dir=custom_dir
-            )
-
-        assert path is not None
-        assert (custom_dir / path).exists()
-        assert not (get_data_dir() / "content" / path).exists()
-
-    def test_repeated_call_is_cached_not_refetched(self, tmp_path):
-        custom_dir = tmp_path / "resources"
+    def test_repeated_call_is_cached_not_refetched(self):
         with patch("requests.get", return_value=self._mock_response()) as mock_get:
-            first = download_image_to_store(
-                "https://cdn.example.com/photo.jpg", base_dir=custom_dir
-            )
-            second = download_image_to_store(
-                "https://cdn.example.com/photo.jpg", base_dir=custom_dir
-            )
+            first = download_image_to_store("https://cdn.example.com/photo.jpg")
+            second = download_image_to_store("https://cdn.example.com/photo.jpg")
 
         assert first == second
         mock_get.assert_called_once()
 
-    def test_returns_none_on_http_error(self, tmp_path):
+    def test_returns_none_on_http_error(self):
         with patch("requests.get", return_value=self._mock_response(status_code=404)):
-            path = download_image_to_store(
-                "https://cdn.example.com/missing.jpg", base_dir=tmp_path
-            )
+            path = download_image_to_store("https://cdn.example.com/missing.jpg")
 
         assert path is None
 
-    def test_returns_none_on_network_exception(self, tmp_path):
+    def test_returns_none_on_network_exception(self):
         with patch("requests.get", side_effect=ConnectionError("timeout")):
-            path = download_image_to_store(
-                "https://cdn.example.com/photo.jpg", base_dir=tmp_path
-            )
+            path = download_image_to_store("https://cdn.example.com/photo.jpg")
 
         assert path is None
 
-    def test_returns_none_for_empty_url(self, tmp_path):
-        assert download_image_to_store("", base_dir=tmp_path) is None
+    def test_returns_none_for_empty_url(self):
+        assert download_image_to_store("") is None

@@ -15,11 +15,17 @@ Storage
 Fetched resource content is persisted in the *resource store*:
   ``get_data_dir() / "resources/"``
 Each URL is identified by the SHA-256 hash of its (resolved) URL.
-  - ``{hash}.json``  — FetchResult (including title, body text, local image paths)
-  - ``{hash}.md``    — body text as plain text / future Markdown, with any
-    images embedded as a trailing ``## Images`` section
-  - ``images/``      — images downloaded from the fetch strategy's remote
-    image URLs, named by URL hash (see ``content_store.download_image_to_store``)
+  - ``{hash}.json``  — FetchResult (including title and body text)
+  - ``{hash}.md``    — body text as plain text / future Markdown
+
+Note: ``FetchResult.images`` (when Tavily's API provides it) is stored as
+remote URLs only — not downloaded or embedded. Tavily's own markdown
+``![]()`` refs for LinkedIn pages are unreliable (comment avatars mixed in
+with the post's real image, and the real image's URL is often a broken
+lazy-load placeholder rather than the actual CDN link), so there's no
+markdown-scraping fallback either. Getting the real post image reliably
+needs the DOM/JSON-LD approach in ``post_extraction.py``, which requires a
+raw HTML fetch Tavily doesn't give us — not implemented here yet.
 
 Typical pipeline
 ----------------
@@ -60,7 +66,6 @@ from linkedin_api.activity_csv import get_data_dir
 from linkedin_api.content_store import (
     _content_dir,
     _load_registry,
-    download_image_to_store,
     update_urls_metadata,
 )
 from linkedin_api.utils.auth import get_secret
@@ -245,31 +250,64 @@ def _title_from_markdown(content: str) -> str:
 #: everything up to this heading, where the real post starts.
 _LINKEDIN_POST_HEADING_RE = re.compile(r"^#\s+.+[’']s Post\s*$", re.MULTILINE)
 
+#: Guest-view footer starts here: a content-category nav menu, copyright,
+#: language picker, and a "sign in to view more" call-to-action — none of it
+#: post content. Drop everything from this heading onward.
+_LINKEDIN_FOOTER_MARKER = "## Explore content categories"
 
-def _strip_linkedin_guest_preamble(content: str, url: str) -> str:
-    """No-op for non-LinkedIn URLs, or pages that don't match the guest-view
-    post heading (e.g. articles, profile pages) — safe to call unconditionally."""
+#: Words that make up LinkedIn's like/reply/share/reaction-count UI chrome.
+#: A line built entirely out of these (after stripping markdown link syntax)
+#: is a button row, not content — safe to drop. Lines of pure digits (e.g. a
+#: comment that's just a number, common in "guess the number" posts) are
+#: untouched since they have no letters to match here.
+_LINKEDIN_CHROME_WORDS = frozenset(
+    {
+        "like",
+        "reply",
+        "comment",
+        "share",
+        "copy",
+        "reaction",
+        "reactions",
+        "linkedin",
+        "facebook",
+        "x",
+    }
+)
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+
+
+def _is_linkedin_chrome_line(line: str) -> bool:
+    # Surround each link's text with spaces so adjacent links (e.g.
+    # "[Like](url)[Reply](url)") don't concatenate into one token.
+    text = _MARKDOWN_LINK_RE.sub(r" \1 ", line)
+    tokens = re.findall(r"[A-Za-z]+", text)
+    return bool(tokens) and all(t.lower() in _LINKEDIN_CHROME_WORDS for t in tokens)
+
+
+def _clean_linkedin_markdown(content: str, url: str) -> str:
+    """Strip LinkedIn guest-view chrome from Tavily's markdown: the nav/
+    sign-in preamble before the post, the "Explore content categories" footer
+    (categories nav, copyright, language picker, sign-in CTA) after the
+    comments, and inline Like/Reply/Share/Reaction button rows scattered
+    throughout. No-op for non-LinkedIn URLs, or when a marker isn't found
+    (e.g. articles without a "<Name>'s Post" heading) — safe to call
+    unconditionally.
+    """
     if "linkedin.com" not in url:
         return content
+
     match = _LINKEDIN_POST_HEADING_RE.search(content)
-    if not match:
-        return content
-    return content[match.start() :]
+    if match:
+        content = content[match.start() :]
 
+    footer_idx = content.find(_LINKEDIN_FOOTER_MARKER)
+    if footer_idx != -1:
+        content = content[:footer_idx]
 
-#: Fallback when Tavily's own ``images`` field is empty (e.g. LinkedIn's CDN
-#: image URLs are obfuscated/signed and Tavily doesn't always resolve them) —
-#: pull image URLs straight out of the markdown ``![alt](url)`` syntax
-#: instead. Scanning the *preamble-stripped* content means LinkedIn nav/avatar
-#: images (which live before the post heading) are already excluded for free.
-#: For non-LinkedIn pages this is a best-effort scan of whatever Tavily
-#: returned, with no body-only scoping (unlike ``post_extraction.py``'s DOM
-#: subtree approach for the user's own posts).
-_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)\s]+)\)")
-
-
-def _images_from_markdown(content: str) -> list[str]:
-    return list(dict.fromkeys(_MARKDOWN_IMAGE_RE.findall(content)))
+    lines = [ln for ln in content.splitlines() if not _is_linkedin_chrome_line(ln)]
+    content = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
+    return content.strip()
 
 
 def _fetch_tavily(url: str) -> tuple[str, str, list[str]]:
@@ -303,11 +341,12 @@ def _fetch_tavily(url: str) -> tuple[str, str, list[str]]:
         raise ValueError("tavily: no content extracted")
 
     result = results[0]
-    content = _strip_linkedin_guest_preamble(str(result.get("raw_content") or ""), url)
+    content = _clean_linkedin_markdown(str(result.get("raw_content") or ""), url)
     title = str(result.get("title") or "") or _title_from_markdown(content)
+    # Tavily's own images field is the only source now — its markdown ![]()
+    # refs for LinkedIn are unreliable (comment avatars, broken lazy-load
+    # placeholders for the real post image), see module docstring.
     images = [str(u) for u in (result.get("images") or []) if u]
-    if not images:
-        images = _images_from_markdown(content)
     return title, content, images
 
 
@@ -383,21 +422,6 @@ def has_resource(url: str) -> bool:
     return (_resource_dir() / f"{_url_stem(url)}.json").exists()
 
 
-def _download_resource_images(image_urls: list[str], resource_dir: Path) -> list[str]:
-    """Download each remote *image_urls* entry into ``{resource_dir}/images/``.
-
-    Returns local paths (relative to *resource_dir*, e.g. ``"images/abc.jpg"``)
-    for successful downloads only — failures are silently dropped rather than
-    blocking the rest of the resource save.
-    """
-    local: list[str] = []
-    for image_url in image_urls:
-        local_path = download_image_to_store(image_url, base_dir=resource_dir)
-        if local_path:
-            local.append(local_path)
-    return local
-
-
 def save_resource(
     url: str,
     result: FetchResult,
@@ -408,14 +432,11 @@ def save_resource(
 
     Writes:
     - ``{stem}.json``  — FetchResult dict + ``cited_by`` list (always)
-    - ``{stem}.md``    — body text, with any images downloaded to
-      ``resources/images/`` and embedded as a trailing ``## Images`` section
-      (only when content or images are non-empty)
+    - ``{stem}.md``    — body text (only when content is non-empty)
 
     ``cited_by`` is merged with any existing entries so multiple posts citing
     the same resource accumulate rather than overwrite. ``result.images``
-    (remote URLs from the fetch strategy) is replaced in storage with the
-    local paths actually downloaded, so the resource is self-contained.
+    (remote URLs) is stored as-is — not downloaded — see module docstring.
     """
     stem = _url_stem(url)
     resource_dir = _resource_dir()
@@ -438,28 +459,18 @@ def save_resource(
     # Store content-store hashes (sha256(urn)) so cited_by entries are
     # directly usable as filenames: content/<hash>.md / content/<hash>.meta.json
     new_hashes = [hashlib.sha256(u.encode()).hexdigest() for u in citing_post_urns if u]
-    local_images = _download_resource_images(result.images, resource_dir)
-
     data = asdict(result)
     # Strip UTM from url/resolved_url — the file is keyed by canonical URL anyway
     data["url"] = strip_utm_params(data["url"])
     data["resolved_url"] = strip_utm_params(data["resolved_url"])
-    data["images"] = local_images
     data["cited_by"] = list(dict.fromkeys(existing_cited_by + new_hashes))
     json_path.write_text(
         json.dumps(data, indent=0, ensure_ascii=False), encoding="utf-8"
     )
 
-    content = result.content
-    if local_images:
-        images_md = "\n".join(f"![]({path})" for path in local_images)
-        content = (
-            f"{content.rstrip()}\n\n## Images\n{images_md}" if content else images_md
-        )
-
-    if content:
+    if result.content:
         md_path = resource_dir / f"{stem}.md"
-        md_path.write_text(content, encoding="utf-8")
+        md_path.write_text(result.content, encoding="utf-8")
 
     return json_path
 

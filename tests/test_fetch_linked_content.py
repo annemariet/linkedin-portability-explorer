@@ -373,63 +373,22 @@ class TestResourceStore:
         path_b = save_resource(url_b, res_b)
         assert path_a != path_b
 
-    def test_images_downloaded_and_embedded_in_markdown(self):
-        """Remote image URLs are downloaded next to the resource's .md file
-        and embedded via local path, not left as remote URLs."""
+    def test_images_stored_as_remote_urls_not_downloaded(self):
+        """result.images is persisted as-is (remote URLs) — not downloaded or
+        embedded in the .md; see module docstring for why."""
         url = "https://example.com/with-images"
         result = FetchResult(
             url=url,
             content="Body text",
-            images=["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.jpg"],
+            images=["https://cdn.example.com/a.jpg"],
         )
-        with patch(
-            "linkedin_api.fetch_linked_content.download_image_to_store",
-            side_effect=lambda u, base_dir: f"images/{u.rsplit('/', 1)[-1]}",
-        ) as mock_download:
-            json_path = save_resource(url, result)
-
-        assert mock_download.call_count == 2
-        md_text = json_path.with_suffix(".md").read_text()
-        assert "Body text" in md_text
-        assert "## Images" in md_text
-        assert "![](images/a.jpg)" in md_text
-        assert "![](images/b.jpg)" in md_text
-
-        stored = json.loads(json_path.read_text())
-        assert stored["images"] == ["images/a.jpg", "images/b.jpg"]
-
-    def test_failed_image_downloads_are_dropped(self):
-        url = "https://example.com/broken-image"
-        result = FetchResult(
-            url=url, content="Body", images=["https://cdn.example.com/broken.jpg"]
-        )
-        with patch(
-            "linkedin_api.fetch_linked_content.download_image_to_store",
-            return_value=None,
-        ):
-            json_path = save_resource(url, result)
+        json_path = save_resource(url, result)
 
         md_text = json_path.with_suffix(".md").read_text()
-        assert md_text == "Body"
+        assert md_text == "Body text"
+
         stored = json.loads(json_path.read_text())
-        assert stored["images"] == []
-
-    def test_images_only_no_content_still_writes_md(self):
-        """A resource with images but no text content still gets an .md file
-        (just the embedded images, no leading blank body)."""
-        url = "https://example.com/image-only"
-        result = FetchResult(
-            url=url, content="", images=["https://cdn.example.com/a.jpg"]
-        )
-        with patch(
-            "linkedin_api.fetch_linked_content.download_image_to_store",
-            return_value="images/a.jpg",
-        ):
-            json_path = save_resource(url, result)
-
-        md_path = json_path.with_suffix(".md")
-        assert md_path.exists()
-        assert md_path.read_text() == "![](images/a.jpg)"
+        assert stored["images"] == ["https://cdn.example.com/a.jpg"]
 
 
 # ---------------------------------------------------------------------------
@@ -938,7 +897,7 @@ class TestFetchTavily:
             "results": [
                 {
                     "url": "https://example.com/article",
-                    "raw_content": "# Title\n\n![alt](https://cdn.example.com/markdown.jpg)",
+                    "raw_content": "# Title\n\nBody.",
                     "images": ["https://cdn.example.com/api-image.jpg"],
                 }
             ],
@@ -953,26 +912,18 @@ class TestFetchTavily:
         ):
             _, _, images = _fetch_tavily("https://example.com/article")
 
-        # API's own images field wins over parsing markdown, when non-empty.
         assert images == ["https://cdn.example.com/api-image.jpg"]
 
-    def test_falls_back_to_markdown_images_when_api_field_empty(self):
-        """LinkedIn's CDN image URLs are sometimes obfuscated/signed and
-        Tavily's own `images` field comes back empty — fall back to scanning
-        the markdown `![alt](url)` syntax in the (preamble-stripped) content."""
+    def test_no_images_field_returns_empty_list(self):
+        """No markdown-scraping fallback — LinkedIn's own image refs in the
+        markdown are unreliable (comment avatars, broken lazy-load
+        placeholders), so an empty API field just means no images."""
         mock_client = MagicMock()
         mock_client.extract.return_value = {
             "results": [
                 {
-                    "url": "https://www.linkedin.com/feed/update/urn:li:activity:1/",
-                    "raw_content": (
-                        "Agree & Join LinkedIn\n\n"
-                        "![nav logo](https://static.example.com/nav-logo.png)\n\n"
-                        "# Jane Doe’s Post\n\n"
-                        "Post text.\n\n"
-                        "![post image](https://cdn.example.com/post-image.jpg)\n\n"
-                        "![post image](https://cdn.example.com/post-image.jpg)"
-                    ),
+                    "url": "u",
+                    "raw_content": "Text with a ![markdown image](https://cdn.example.com/x.jpg) in it.",
                     "images": [],
                 }
             ],
@@ -985,18 +936,29 @@ class TestFetchTavily:
             ),
             patch("tavily.TavilyClient", return_value=mock_client),
         ):
-            _, _, images = _fetch_tavily(
-                "https://www.linkedin.com/feed/update/urn:li:activity:1/"
-            )
+            _, _, images = _fetch_tavily("https://example.com/article")
 
-        # Deduped, and the nav-logo image (before the post heading, in the
-        # stripped preamble) is excluded — only the in-post image remains.
-        assert images == ["https://cdn.example.com/post-image.jpg"]
+        assert images == []
 
-    def test_no_images_anywhere_returns_empty_list(self):
+    def test_strips_explore_categories_footer(self):
+        """The guest-view footer (category nav, copyright, language picker,
+        sign-in CTA) starts at '## Explore content categories' — drop it."""
         mock_client = MagicMock()
         mock_client.extract.return_value = {
-            "results": [{"url": "u", "raw_content": "Plain text, no images."}],
+            "results": [
+                {
+                    "url": "https://www.linkedin.com/feed/update/urn:li:activity:1/",
+                    "raw_content": (
+                        "Agree & Join LinkedIn\n\n"
+                        "# Jane Doe’s Post\n\n"
+                        "The actual post content.\n\n"
+                        "## Explore content categories\n\n"
+                        "*   Career\n*   Productivity\n\n"
+                        "LinkedIn© 2026\n"
+                        "## Sign in to view more content"
+                    ),
+                }
+            ],
             "failed_results": [],
         }
         with (
@@ -1006,9 +968,76 @@ class TestFetchTavily:
             ),
             patch("tavily.TavilyClient", return_value=mock_client),
         ):
-            _, _, images = _fetch_tavily("https://example.com/article")
+            _, content, _ = _fetch_tavily(
+                "https://www.linkedin.com/feed/update/urn:li:activity:1/"
+            )
 
-        assert images == []
+        assert "The actual post content." in content
+        assert "Explore content categories" not in content
+        assert "Career" not in content
+        assert "Sign in to view more content" not in content
+
+    def test_strips_engagement_chrome_lines(self):
+        """Like/Reply/Reaction button rows scattered through comments are
+        pure UI chrome — drop them, but leave real content (including
+        comments that are just a number, e.g. "guess the number" posts)."""
+        mock_client = MagicMock()
+        mock_client.extract.return_value = {
+            "results": [
+                {
+                    "url": "https://www.linkedin.com/feed/update/urn:li:activity:1/",
+                    "raw_content": (
+                        "# Jane Doe’s Post\n\n"
+                        "The post text.\n\n"
+                        "[John Smith](url) 5mo\n\n"
+                        "175\n\n"
+                        "[Like](url)[Reply](url) 1 Reaction \n\n"
+                        "[Alice](url) 3mo\n\n"
+                        "Great point!\n\n"
+                        "[Like](url)[Reply](url)[2 Reactions](url) 3 Reactions "
+                    ),
+                }
+            ],
+            "failed_results": [],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            _, content, _ = _fetch_tavily(
+                "https://www.linkedin.com/feed/update/urn:li:activity:1/"
+            )
+
+        assert "175" in content  # a bare-number comment is real content
+        assert "Great point!" in content
+        assert "Like" not in content
+        assert "Reply" not in content
+        assert "Reaction" not in content
+
+    def test_does_not_strip_chrome_lines_for_non_linkedin_url(self):
+        mock_client = MagicMock()
+        mock_client.extract.return_value = {
+            "results": [
+                {
+                    "url": "https://example.com/article",
+                    "raw_content": "# Title\n\n[Like](url)[Reply](url) 1 Reaction",
+                }
+            ],
+            "failed_results": [],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            _, content, _ = _fetch_tavily("https://example.com/article")
+
+        assert "[Like](url)[Reply](url) 1 Reaction" in content
 
 
 class TestFetchLinkedContentViaTavily:
