@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import warnings
-from datetime import UTC, datetime
 from typing import Any
 
 from linkedin_api.content_store import (

@@ -27,11 +27,7 @@ dependencies = [
     "trafilatura==2.0.0",
     "python-dotenv==1.2.1",
     "tqdm==4.67.1",
-    "kg-vault",
 ]
-
-[tool.uv.sources]
-kg-vault = { path = "../kg-vault", editable = true }
 
 [project.optional-dependencies]
 llm = [

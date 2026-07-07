@@ -8,8 +8,6 @@ import re
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse, urlunparse
 
-from kg_vault.catalog import canonical_source_id
-
 
 def linkedin_hashtag_keyword(url: str) -> Optional[str]:
     """Hashtag text from a LinkedIn hashtag URL, or None if not a hashtag link."""
@@ -273,13 +271,51 @@ def strip_utm_params(url: str) -> str:
         return url
 
 
-def canonical_resource_url(url: str) -> str:
-    """Stable resource identity (UTM/tracking stripped, normalized host/path).
+_TRACKING_QUERY_KEYS = frozenset(
+    {
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid",
+        "ref",
+        "source",
+    }
+)
 
-    Alias for :func:`kg_vault.catalog.canonical_source_id` without redirect resolution.
-    Pass ``resolved=`` when the caller already followed redirects.
+
+def canonical_resource_url(url: str) -> str:
+    """Stable resource identity: UTM/tracking params stripped, host lowercased,
+    default port and trailing slash dropped, no fragment.
+
+    Assumes *url* has already had redirects resolved by the caller.
     """
-    return canonical_source_id(url)
+    raw = (url or "").strip()
+    if not raw.startswith(("http://", "https://")):
+        return raw
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return raw
+    scheme = (parsed.scheme or "https").lower()
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return raw
+    port = parsed.port
+    if port and (
+        (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    ):
+        port = None
+    netloc = host if port is None else f"{host}:{port}"
+    path = parsed.path or ""
+    if path != "/":
+        path = path.rstrip("/")
+    filtered = [
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if not k.lower().startswith("utm_") and k.lower() not in _TRACKING_QUERY_KEYS
+    ]
+    query = urlencode(filtered, doseq=True)
+    return urlunparse((scheme, netloc, path, "", query, ""))
 
 
 def is_linkedin_internal_url(url: str) -> bool:

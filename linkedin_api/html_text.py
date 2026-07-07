@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Iterable
 
 from bs4 import BeautifulSoup, NavigableString, Tag
 
@@ -30,7 +30,7 @@ _CHROME_TAGS = ("script", "style", "nav", "header", "footer", "aside")
 _COLLAPSE_WS = re.compile(r"[ \t]+")
 
 
-def _render_inline(element: Tag | NavigableString) -> str:
+def _render_inline(element: Any) -> str:
     if isinstance(element, NavigableString):
         return str(element)
     if not isinstance(element, Tag):
@@ -98,6 +98,7 @@ def extract_html_body_text(soup: BeautifulSoup) -> str:
 def x_entity_map(entity_map: Any) -> dict[int, dict]:
     """Normalize fxTwitter Draft.js entityMap (list or dict) to int → entity."""
     out: dict[int, dict] = {}
+    items: Iterable[tuple[Any, Any]]
     if isinstance(entity_map, dict):
         items = entity_map.items()
     elif isinstance(entity_map, list):

@@ -156,8 +156,9 @@ def parse_summary_response(raw_output: str) -> ParsedSummary:
         stripped = raw.strip()
         if not stripped:
             continue
-        if _TOPICS_LINE_RE.match(stripped):
-            topics = _parse_topics_line(_TOPICS_LINE_RE.match(stripped).group(1))
+        m_topics_line = _TOPICS_LINE_RE.match(stripped)
+        if m_topics_line:
+            topics = _parse_topics_line(m_topics_line.group(1))
             continue
         if _BULLET_RE.match(stripped):
             bullets.append(_BULLET_RE.sub("", stripped, count=1).strip())

@@ -1028,11 +1028,6 @@ wheels = [
 ]
 
 [[package]]
-name = "kg-vault"
-version = "0.1.0"
-source = { editable = "../kg-vault" }
-
-[[package]]
 name = "librt"
 version = "0.7.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1091,7 +1086,6 @@ source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "keyring" },
-    { name = "kg-vault" },
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "tqdm" },
@@ -1141,7 +1135,6 @@ requires-dist = [
     { name = "boto3", marker = "extra == 's3'", specifier = "==1.38.36" },
     { name = "gradio", marker = "extra == 'ui'", specifier = "==6.1.0" },
     { name = "keyring", specifier = "==25.7.0" },
-    { name = "kg-vault", editable = "../kg-vault" },
     { name = "linkedin-portability", extras = ["llm"], marker = "extra == 'ui'" },
     { name = "ollama", marker = "extra == 'llm'", specifier = "==0.6.1" },
     { name = "openai", marker = "extra == 'llm'", specifier = "==1.109.1" },

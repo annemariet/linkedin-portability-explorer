@@ -461,7 +461,9 @@ def _linkedin_resource_prefix() -> str:
 
 def _object_store_config():
     try:
-        from kg_vault.object_sync import s3_store_config_from_env
+        from kg_vault.object_sync import (  # type: ignore[import-not-found]
+            s3_store_config_from_env,
+        )
     except ImportError:
         return None
     return s3_store_config_from_env(prefix=_linkedin_resource_prefix())
@@ -733,7 +735,6 @@ def process_post_linked_content(
     Returns:
         List of :class:`FetchResult` (including failures and skips).
     """
-    urns = [citing_post_urn] if citing_post_urn else []
     results: list[FetchResult] = []
     for url in urls:
         results.append(

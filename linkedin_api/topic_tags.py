@@ -4,12 +4,65 @@ from __future__ import annotations
 
 import logging
 import re
-
-from kg_vault.catalog import normalize_obsidian_tags
+import unicodedata
 
 from linkedin_api.llm_config import LLMClient
 
 logger = logging.getLogger(__name__)
+
+_NON_OBSIDIAN_TAG_CHARS = re.compile(r"[^a-z0-9/_-]+")
+_TAG_COLLAPSE_RE = re.compile(r"-{2,}|/{2,}")
+
+
+def _fold_accents(text: str) -> str:
+    """Strip combining marks (é→e, ü→u) for ASCII-safe tag slugs."""
+    normalized = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
+
+
+def _normalize_obsidian_tag(raw: str) -> str | None:
+    """Return an Obsidian-valid tag slug, or None if nothing usable remains."""
+    text = (raw or "").strip().lstrip("#")
+    if not text:
+        return None
+    text = _fold_accents(text)
+    text = text.lower().replace("'", "").replace("’", "")
+    text = re.sub(r"[@.]+", "-", text)
+    text = re.sub(r"[\s_()]+", "-", text)
+    text = _NON_OBSIDIAN_TAG_CHARS.sub("", text)
+    text = _TAG_COLLAPSE_RE.sub(lambda m: m.group(0)[0], text)
+    text = text.strip("-/")
+    if not text:
+        return None
+    body = text.replace("/", "").replace("-", "")
+    if body.isdigit():
+        text = f"tag-{text}"
+    return text
+
+
+def normalize_obsidian_tags(
+    values: list[str] | None,
+    *,
+    limit: int | None = None,
+) -> list[str]:
+    """Normalize topic/tag strings for YAML ``tags:`` frontmatter (deduped, ordered)."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        text = str(value).strip()
+        if not text:
+            continue
+        chunks = [p.strip() for p in re.split(r"[,;]", text) if p.strip()]
+        for chunk in chunks:
+            slug = _normalize_obsidian_tag(chunk)
+            if not slug or slug in seen:
+                continue
+            seen.add(slug)
+            ordered.append(slug)
+            if limit is not None and len(ordered) >= limit:
+                return ordered
+    return ordered
+
 
 TOPIC_TRANSLATE_SYSTEM_PROMPT = (
     "You convert theme labels into English catalog tags for a personal knowledge vault.\n"
