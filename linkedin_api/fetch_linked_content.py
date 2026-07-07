@@ -3,9 +3,12 @@ Fetch content from URLs linked in LinkedIn posts/comments.
 
 Pluggable extractor with strategy dispatch by URL type.
 
-MVP: simple HTML→text via BeautifulSoup body.
-Later: trafilatura for articles (Substack, Medium, blogs);
-       metadata-only for YouTube/GitHub.
+Body-fetch backend selectable via ``LINKEDIN_EXTRACTOR``:
+  - ``httpx``  (default) — requests + BeautifulSoup body extraction.
+  - ``tavily`` — Tavily Extract API; handles JS-rendered / Cloudflare-gated
+    pages the httpx backend can't. Falls back to httpx if ``TAVILY_API_KEY``
+    isn't configured. See ``TAVILY_EXTRACT_DEPTH`` (basic|advanced).
+Metadata-only for YouTube/GitHub/podcasts regardless of backend.
 
 Storage
 -------
@@ -26,6 +29,12 @@ CLI
   uv run python -m linkedin_api.fetch_linked_content          # all posts
   uv run python -m linkedin_api.fetch_linked_content --limit 5
   uv run python -m linkedin_api.fetch_linked_content --dry-run
+
+  LINKEDIN_EXTRACTOR=tavily uv run python -m linkedin_api.fetch_linked_content
+
+Compare backends on specific URLs before switching the default (see
+``compare_extractors.py``):
+  uv run python -m linkedin_api.compare_extractors "https://…" "https://…"
 """
 
 from __future__ import annotations
@@ -49,6 +58,7 @@ from linkedin_api.content_store import (
     _load_registry,
     update_urls_metadata,
 )
+from linkedin_api.utils.auth import get_secret
 from linkedin_api.utils.urls import (
     categorize_url,
     extract_urls_from_text,
@@ -176,28 +186,97 @@ def _fetch_metadata_only(url: str) -> tuple[str, str]:
     return title, ""
 
 
+def _tavily_api_key() -> str:
+    """TAVILY_API_KEY, via keyring first (see ``get_secret``) then env var."""
+    return get_secret("TAVILY_API_KEY") or ""
+
+
+def _title_from_markdown(content: str) -> str:
+    """First non-empty line of extracted markdown, used as a title fallback
+    (Tavily's Extract API returns body content only, no separate title field)."""
+    for line in content.splitlines():
+        line = line.strip()
+        if line:
+            return line.lstrip("#").strip()
+    return ""
+
+
+def _fetch_tavily(url: str) -> tuple[str, str]:
+    """Extract title/body via Tavily's Extract API.
+
+    Handles JS-rendered pages and Cloudflare-gated sites that ``_fetch_html_body``
+    cannot (see ``TAVILY_EXTRACT_DEPTH``, default "advanced").
+    """
+    from tavily import TavilyClient  # type: ignore[import-untyped]
+
+    api_key = _tavily_api_key()
+    if not api_key:
+        raise ValueError("TAVILY_API_KEY not configured (keyring or env)")
+
+    depth = os.environ.get("TAVILY_EXTRACT_DEPTH", "advanced").strip().lower()
+    if depth not in ("basic", "advanced"):
+        depth = "advanced"
+
+    client = TavilyClient(api_key=api_key)
+    response = client.extract(urls=[url], extract_depth=depth, format="markdown")
+
+    failed = response.get("failed_results") or []
+    if failed:
+        reason = failed[0].get("error") or "extraction failed"
+        raise ValueError(f"tavily: {reason}")
+
+    results = response.get("results") or []
+    if not results:
+        raise ValueError("tavily: no content extracted")
+
+    content = str(results[0].get("raw_content") or "")
+    return _title_from_markdown(content), content
+
+
 # ---------------------------------------------------------------------------
 # Strategy registry  (dispatch table — extend here for new URL types)
 # ---------------------------------------------------------------------------
 
-#: Maps url_type → fetch strategy.  Add entries here to support new types.
-STRATEGIES: dict[str, FetchStrategy] = {
-    "article": _fetch_html_body,
-    "documentation": _fetch_html_body,
-    "research": _fetch_html_body,
-    "tool": _fetch_html_body,
-    "social": _fetch_html_body,
-    "product": _fetch_html_body,
-    # Metadata-only (body extraction deferred)
-    "video": _fetch_metadata_only,
-    "repository": _fetch_metadata_only,
-    "podcast": _fetch_metadata_only,
+#: Body-fetch backends selectable via ``LINKEDIN_EXTRACTOR=httpx|tavily``.
+_BODY_BACKENDS: dict[str, FetchStrategy] = {
+    "httpx": _fetch_html_body,
+    "tavily": _fetch_tavily,
 }
+
+#: URL types that are always metadata-only (body extraction deferred), regardless
+#: of ``LINKEDIN_EXTRACTOR`` — no point spending Tavily credits on YouTube/GitHub.
+_METADATA_ONLY_URL_TYPES: frozenset[str] = frozenset({"video", "repository", "podcast"})
 
 #: URL types whose content we never attempt to fetch (binary / media files).
 SKIP_TYPES: frozenset[str] = frozenset(
     {"image", "document", "presentation", "archive", "audio"}
 )
+
+
+def _extractor_backend() -> str:
+    """Resolve ``LINKEDIN_EXTRACTOR`` (default ``httpx``).
+
+    Falls back to ``httpx`` with a warning when ``tavily`` is selected but no
+    ``TAVILY_API_KEY`` is configured, so the pipeline keeps working without it.
+    """
+    backend = os.environ.get("LINKEDIN_EXTRACTOR", "httpx").strip().lower()
+    if backend not in _BODY_BACKENDS:
+        backend = "httpx"
+    if backend == "tavily" and not _tavily_api_key():
+        logger.warning(
+            "LINKEDIN_EXTRACTOR=tavily but no TAVILY_API_KEY configured "
+            "(keyring or env) — falling back to httpx"
+        )
+        return "httpx"
+    return backend
+
+
+def _strategy_for(url_type: str) -> FetchStrategy:
+    """Dispatch by URL type; body-fetch types honor ``LINKEDIN_EXTRACTOR``."""
+    if url_type in _METADATA_ONLY_URL_TYPES:
+        return _fetch_metadata_only
+    return _BODY_BACKENDS[_extractor_backend()]
+
 
 # Cloudflare JS challenge markers — title and body fragments that identify a
 # challenge page rather than real content (Medium, some news sites).
@@ -347,7 +426,7 @@ def fetch_linked_content(
         )
 
     logger.info("GET %s [%s]", resolved, url_type)
-    strategy = STRATEGIES.get(url_type, _fetch_html_body)
+    strategy = _strategy_for(url_type)
     try:
         title, content = strategy(resolved)
         logger.info("  -> %s", title[:80] if title else "(no title)")

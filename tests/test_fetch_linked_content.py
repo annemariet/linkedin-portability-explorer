@@ -9,7 +9,10 @@ import pytest
 from linkedin_api.content_store import load_metadata, save_content, save_metadata
 from linkedin_api.fetch_linked_content import (
     FetchResult,
+    _extractor_backend,
+    _fetch_tavily,
     _iter_posts_with_urls,
+    _strategy_for,
     fetch_linked_content,
     has_resource,
     load_resource,
@@ -557,6 +560,197 @@ class TestCloudflareDetection:
             results = process_post_linked_content([url], skip_cached=False)
         assert not has_resource(url)
         assert results[0].error == "cloudflare challenge"
+
+
+# ---------------------------------------------------------------------------
+# LINKEDIN_EXTRACTOR backend selection
+# ---------------------------------------------------------------------------
+
+
+class TestExtractorBackend:
+    def test_defaults_to_httpx(self, monkeypatch):
+        monkeypatch.delenv("LINKEDIN_EXTRACTOR", raising=False)
+        assert _extractor_backend() == "httpx"
+
+    def test_selects_tavily_when_key_present(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_EXTRACTOR", "tavily")
+        with patch(
+            "linkedin_api.fetch_linked_content._tavily_api_key",
+            return_value="fake-key",
+        ):
+            assert _extractor_backend() == "tavily"
+
+    def test_falls_back_to_httpx_without_key(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_EXTRACTOR", "tavily")
+        with patch(
+            "linkedin_api.fetch_linked_content._tavily_api_key", return_value=""
+        ):
+            assert _extractor_backend() == "httpx"
+
+    def test_unknown_value_falls_back_to_httpx(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_EXTRACTOR", "bogus")
+        assert _extractor_backend() == "httpx"
+
+    def test_metadata_only_types_ignore_extractor(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_EXTRACTOR", "tavily")
+        with patch(
+            "linkedin_api.fetch_linked_content._tavily_api_key",
+            return_value="fake-key",
+        ):
+            from linkedin_api.fetch_linked_content import _fetch_metadata_only
+
+            assert _strategy_for("video") is _fetch_metadata_only
+            assert _strategy_for("repository") is _fetch_metadata_only
+
+    def test_article_type_uses_selected_backend(self, monkeypatch):
+        monkeypatch.delenv("LINKEDIN_EXTRACTOR", raising=False)
+        from linkedin_api.fetch_linked_content import _fetch_html_body
+
+        assert _strategy_for("article") is _fetch_html_body
+
+        monkeypatch.setenv("LINKEDIN_EXTRACTOR", "tavily")
+        with patch(
+            "linkedin_api.fetch_linked_content._tavily_api_key",
+            return_value="fake-key",
+        ):
+            assert _strategy_for("article") is _fetch_tavily
+
+
+# ---------------------------------------------------------------------------
+# _fetch_tavily
+# ---------------------------------------------------------------------------
+
+
+class TestFetchTavily:
+    def test_raises_without_api_key(self):
+        with patch(
+            "linkedin_api.fetch_linked_content._tavily_api_key", return_value=""
+        ):
+            with pytest.raises(ValueError, match="TAVILY_API_KEY"):
+                _fetch_tavily("https://example.com/article")
+
+    def test_success_extracts_title_and_content(self):
+        mock_client = MagicMock()
+        mock_client.extract.return_value = {
+            "results": [
+                {
+                    "url": "https://example.com/article",
+                    "raw_content": "# Great Article\n\nBody text here.",
+                }
+            ],
+            "failed_results": [],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            title, content = _fetch_tavily("https://example.com/article")
+
+        assert title == "Great Article"
+        assert "Body text here." in content
+        mock_client.extract.assert_called_once()
+        _, kwargs = mock_client.extract.call_args
+        assert kwargs["urls"] == ["https://example.com/article"]
+        assert kwargs["extract_depth"] == "advanced"
+        assert kwargs["format"] == "markdown"
+
+    def test_basic_depth_via_env(self, monkeypatch):
+        monkeypatch.setenv("TAVILY_EXTRACT_DEPTH", "basic")
+        mock_client = MagicMock()
+        mock_client.extract.return_value = {
+            "results": [{"url": "u", "raw_content": "content"}],
+            "failed_results": [],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            _fetch_tavily("https://example.com/article")
+
+        _, kwargs = mock_client.extract.call_args
+        assert kwargs["extract_depth"] == "basic"
+
+    def test_failed_result_raises(self):
+        mock_client = MagicMock()
+        mock_client.extract.return_value = {
+            "results": [],
+            "failed_results": [{"url": "u", "error": "unsupported content type"}],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            with pytest.raises(ValueError, match="unsupported content type"):
+                _fetch_tavily("https://example.com/broken")
+
+    def test_no_results_raises(self):
+        mock_client = MagicMock()
+        mock_client.extract.return_value = {"results": [], "failed_results": []}
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            with pytest.raises(ValueError, match="no content extracted"):
+                _fetch_tavily("https://example.com/empty")
+
+
+class TestFetchLinkedContentViaTavily:
+    def test_dispatches_to_tavily_end_to_end(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_EXTRACTOR", "tavily")
+        mock_client = MagicMock()
+        mock_client.extract.return_value = {
+            "results": [
+                {
+                    "url": "https://example.com/article",
+                    "raw_content": "# Piece\n\nReal body from Tavily.",
+                }
+            ],
+            "failed_results": [],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            result = fetch_linked_content(
+                "https://example.com/article", resolve_redirects=False
+            )
+
+        assert result.ok is True
+        assert result.title == "Piece"
+        assert "Real body from Tavily." in result.content
+
+    def test_tavily_failure_returns_error_result(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_EXTRACTOR", "tavily")
+        mock_client = MagicMock()
+        mock_client.extract.side_effect = RuntimeError("network down")
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            result = fetch_linked_content(
+                "https://example.com/article", resolve_redirects=False
+            )
+
+        assert result.ok is False
+        assert "network down" in result.error
 
 
 # ---------------------------------------------------------------------------
