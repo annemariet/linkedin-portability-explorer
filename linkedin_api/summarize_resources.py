@@ -21,9 +21,11 @@ from linkedin_api.summary_text import (
     ARTICLE_SYSTEM_PROMPT,
     build_article_user_prompt,
     parse_summary_response,
+    truncate,
 )
 
 _MIN_ARTICLE_CHARS = 200
+_MAX_ARTICLE_CHARS = 12000
 
 
 def _resource_summary_complete(result: FetchResult) -> bool:
@@ -75,12 +77,6 @@ def list_resources_for_summary(
     return out
 
 
-def _truncate(content: str, max_chars: int = 12000) -> str:
-    if len(content) <= max_chars:
-        return content
-    return content[:max_chars] + "\n...[truncated]"
-
-
 def _summarize_resource(result: FetchResult, llm, *, model_id: str) -> bool:
     url = (result.resolved_url or result.url or "").strip()
     if not url:
@@ -89,7 +85,7 @@ def _summarize_resource(result: FetchResult, llm, *, model_id: str) -> bool:
     user_prompt = build_article_user_prompt(
         title=title,
         url=url,
-        content=_truncate((result.content or "").strip()),
+        content=truncate((result.content or "").strip(), _MAX_ARTICLE_CHARS),
     )
     try:
         response = llm.invoke(user_prompt, system_instruction=ARTICLE_SYSTEM_PROMPT)

@@ -10,6 +10,14 @@ _LANGUAGE_RULE = (
     "as the source text (e.g. French source → French output; English → English)."
 )
 
+
+def truncate(content: str, max_chars: int) -> str:
+    """Truncate *content* to *max_chars*, marking truncation."""
+    if len(content) <= max_chars:
+        return content
+    return content[:max_chars] + "\n...[truncated]"
+
+
 POST_SYSTEM_PROMPT = (
     "You summarize LinkedIn posts for a busy engineer. Be specific; avoid generic filler.\n"
     f"{_LANGUAGE_RULE}\n"

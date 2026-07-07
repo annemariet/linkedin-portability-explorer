@@ -42,6 +42,7 @@ import re
 import sys
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable
 
@@ -459,6 +460,7 @@ def _linkedin_resource_prefix() -> str:
     return raw.strip("/")
 
 
+@lru_cache(maxsize=1)
 def _object_store_config():
     try:
         from kg_vault.object_sync import (  # type: ignore[import-not-found]

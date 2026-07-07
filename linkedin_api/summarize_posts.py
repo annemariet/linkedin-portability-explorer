@@ -16,16 +16,12 @@ from linkedin_api.summary_text import (
     POST_SYSTEM_PROMPT,
     build_post_user_prompt,
     parse_summary_response,
+    truncate,
 )
 from linkedin_api.topic_tags import topics_to_catalog_tags
 
 BATCH_SIZE = 5
-
-
-def _truncate(content: str, max_chars: int = 2000) -> str:
-    if len(content) <= max_chars:
-        return content
-    return content[:max_chars] + "\n...[truncated]"
+_MAX_POST_CHARS = 2000
 
 
 def _summarize_one(post: dict[str, Any], llm, *, model_id: str) -> bool:
@@ -34,7 +30,7 @@ def _summarize_one(post: dict[str, Any], llm, *, model_id: str) -> bool:
         return False
     meta = load_metadata(urn) or {}
     user_prompt = build_post_user_prompt(
-        content=_truncate(str(post.get("content") or "")),
+        content=truncate(str(post.get("content") or ""), _MAX_POST_CHARS),
         post_author=str(meta.get("post_author") or ""),
         post_url=str(meta.get("post_url") or ""),
     )

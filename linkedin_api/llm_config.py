@@ -20,9 +20,6 @@ _MAMMOUTH_DEPRECATED_CHAT_MODELS: dict[str, str] = {
 
 _KEYRING_SERVICES = ("lucys-foundry", "agent-fleet-rts")
 _MAMMOUTH_KEYRING_ACCOUNTS = ("mammouth", "mammouth_api_key", "openai")
-# Legacy single-service lookup (still tried after lucys-foundry accounts).
-_LEGACY_KEYRING_SERVICE = "agent-fleet-rts"
-_LEGACY_KEYRING_ACCOUNT = "mammouth_api_key"
 _ANTHROPIC_KEYRING_LOOKUPS = (
     ("agent-fleet-rts", "Anthropic"),
     ("agent-fleet-rts", "anthropic"),
@@ -192,15 +189,6 @@ def _resolve_api_key(quiet: bool = False) -> tuple[str | None, str | None]:
                             f"(service={service!r}, account={account!r})"
                         )
                     return key, "macOS Keychain"
-        key = keyring.get_password(_LEGACY_KEYRING_SERVICE, _LEGACY_KEYRING_ACCOUNT)
-        if key:
-            if not quiet:
-                print(
-                    f"  Using API key from keyring "
-                    f"(service={_LEGACY_KEYRING_SERVICE!r}, "
-                    f"account={_LEGACY_KEYRING_ACCOUNT!r})"
-                )
-            return key, "macOS Keychain"
     except Exception as exc:
         if not quiet:
             warnings.warn(f"Keyring lookup failed: {exc}", stacklevel=3)
