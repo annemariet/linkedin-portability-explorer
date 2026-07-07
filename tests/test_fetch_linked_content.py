@@ -702,15 +702,17 @@ class TestFetchTavily:
             ),
             patch("tavily.TavilyClient", return_value=mock_client),
         ):
-            title, content = _fetch_tavily("https://example.com/article")
+            title, content, images = _fetch_tavily("https://example.com/article")
 
         assert title == "Great Article"
         assert "Body text here." in content
+        assert images == []
         mock_client.extract.assert_called_once()
         _, kwargs = mock_client.extract.call_args
         assert kwargs["urls"] == ["https://example.com/article"]
         assert kwargs["extract_depth"] == "advanced"
         assert kwargs["format"] == "markdown"
+        assert kwargs["include_images"] is True
 
     def test_basic_depth_via_env(self, monkeypatch):
         monkeypatch.setenv("TAVILY_EXTRACT_DEPTH", "basic")
@@ -781,7 +783,7 @@ class TestFetchTavily:
             ),
             patch("tavily.TavilyClient", return_value=mock_client),
         ):
-            title, _ = _fetch_tavily("https://example.com/article")
+            title, _, _ = _fetch_tavily("https://example.com/article")
 
         assert title == "The Real Title"
 
@@ -813,7 +815,7 @@ class TestFetchTavily:
             ),
             patch("tavily.TavilyClient", return_value=mock_client),
         ):
-            _, content = _fetch_tavily(
+            _, content, _ = _fetch_tavily(
                 "https://www.linkedin.com/feed/update/urn:li:activity:1/"
             )
 
@@ -840,7 +842,7 @@ class TestFetchTavily:
             ),
             patch("tavily.TavilyClient", return_value=mock_client),
         ):
-            _, content = _fetch_tavily("https://example.com/article")
+            _, content, _ = _fetch_tavily("https://example.com/article")
 
         assert content == content_with_marker
 
@@ -865,11 +867,89 @@ class TestFetchTavily:
             ),
             patch("tavily.TavilyClient", return_value=mock_client),
         ):
-            _, result_content = _fetch_tavily(
+            _, result_content, _ = _fetch_tavily(
                 "https://www.linkedin.com/pulse/some-article"
             )
 
         assert result_content == content
+
+    def test_uses_api_images_field_when_present(self):
+        mock_client = MagicMock()
+        mock_client.extract.return_value = {
+            "results": [
+                {
+                    "url": "https://example.com/article",
+                    "raw_content": "# Title\n\n![alt](https://cdn.example.com/markdown.jpg)",
+                    "images": ["https://cdn.example.com/api-image.jpg"],
+                }
+            ],
+            "failed_results": [],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            _, _, images = _fetch_tavily("https://example.com/article")
+
+        # API's own images field wins over parsing markdown, when non-empty.
+        assert images == ["https://cdn.example.com/api-image.jpg"]
+
+    def test_falls_back_to_markdown_images_when_api_field_empty(self):
+        """LinkedIn's CDN image URLs are sometimes obfuscated/signed and
+        Tavily's own `images` field comes back empty — fall back to scanning
+        the markdown `![alt](url)` syntax in the (preamble-stripped) content."""
+        mock_client = MagicMock()
+        mock_client.extract.return_value = {
+            "results": [
+                {
+                    "url": "https://www.linkedin.com/feed/update/urn:li:activity:1/",
+                    "raw_content": (
+                        "Agree & Join LinkedIn\n\n"
+                        "![nav logo](https://static.example.com/nav-logo.png)\n\n"
+                        "# Jane Doe’s Post\n\n"
+                        "Post text.\n\n"
+                        "![post image](https://cdn.example.com/post-image.jpg)\n\n"
+                        "![post image](https://cdn.example.com/post-image.jpg)"
+                    ),
+                    "images": [],
+                }
+            ],
+            "failed_results": [],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            _, _, images = _fetch_tavily(
+                "https://www.linkedin.com/feed/update/urn:li:activity:1/"
+            )
+
+        # Deduped, and the nav-logo image (before the post heading, in the
+        # stripped preamble) is excluded — only the in-post image remains.
+        assert images == ["https://cdn.example.com/post-image.jpg"]
+
+    def test_no_images_anywhere_returns_empty_list(self):
+        mock_client = MagicMock()
+        mock_client.extract.return_value = {
+            "results": [{"url": "u", "raw_content": "Plain text, no images."}],
+            "failed_results": [],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            _, _, images = _fetch_tavily("https://example.com/article")
+
+        assert images == []
 
 
 class TestFetchLinkedContentViaTavily:

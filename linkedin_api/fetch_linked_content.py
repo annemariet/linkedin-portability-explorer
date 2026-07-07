@@ -45,7 +45,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -102,6 +102,7 @@ class FetchResult:
     resolved_url: str = ""
     title: str = ""
     content: str = ""
+    images: list[str] = field(default_factory=list)
     url_type: str = ""
     domain: str = ""
     error: str = ""
@@ -117,7 +118,7 @@ class FetchResult:
 # Strategy type alias
 # ---------------------------------------------------------------------------
 
-FetchStrategy = Callable[[str], tuple[str, str]]  # returns (title, content)
+FetchStrategy = Callable[[str], tuple[str, str, list[str]]]  # (title, content, images)
 
 # ---------------------------------------------------------------------------
 # Concrete strategies
@@ -166,8 +167,13 @@ def _fetch_soup(
     return soup, title
 
 
-def _fetch_html_body(url: str) -> tuple[str, str]:
-    """Extract title and body text, stripping nav/chrome noise."""
+def _fetch_html_body(url: str) -> tuple[str, str, list[str]]:
+    """Extract title and body text, stripping nav/chrome noise.
+
+    No image extraction here — see ``post_extraction.py`` for the DOM-scoped
+    (post-body-subtree) approach used for the user's own posts; porting that
+    to arbitrary linked URLs is future work.
+    """
     soup, title = _fetch_soup(url)
     for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
         tag.decompose()
@@ -175,16 +181,16 @@ def _fetch_html_body(url: str) -> tuple[str, str]:
     lines = [
         ln.strip() for ln in body.get_text(separator="\n").splitlines() if ln.strip()
     ]
-    return title, "\n".join(lines)
+    return title, "\n".join(lines), []
 
 
-def _fetch_metadata_only(url: str) -> tuple[str, str]:
+def _fetch_metadata_only(url: str) -> tuple[str, str, list[str]]:
     """Title-only fetch (og:title / <title>); body extraction deferred.
 
     Used for video platforms (YouTube), code repositories (GitHub), etc.
     """
     _, title = _fetch_soup(url, timeout=(5, 10))
-    return title, ""
+    return title, "", []
 
 
 #: Shared cross-project keychain used by amai-lab's lucys-foundry
@@ -247,8 +253,23 @@ def _strip_linkedin_guest_preamble(content: str, url: str) -> str:
     return content[match.start() :]
 
 
-def _fetch_tavily(url: str) -> tuple[str, str]:
-    """Extract title/body via Tavily's Extract API.
+#: Fallback when Tavily's own ``images`` field is empty (e.g. LinkedIn's CDN
+#: image URLs are obfuscated/signed and Tavily doesn't always resolve them) —
+#: pull image URLs straight out of the markdown ``![alt](url)`` syntax
+#: instead. Scanning the *preamble-stripped* content means LinkedIn nav/avatar
+#: images (which live before the post heading) are already excluded for free.
+#: For non-LinkedIn pages this is a best-effort scan of whatever Tavily
+#: returned, with no body-only scoping (unlike ``post_extraction.py``'s DOM
+#: subtree approach for the user's own posts).
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)\s]+)\)")
+
+
+def _images_from_markdown(content: str) -> list[str]:
+    return list(dict.fromkeys(_MARKDOWN_IMAGE_RE.findall(content)))
+
+
+def _fetch_tavily(url: str) -> tuple[str, str, list[str]]:
+    """Extract title/body/images via Tavily's Extract API.
 
     Handles JS-rendered pages and Cloudflare-gated sites that ``_fetch_html_body``
     cannot (see ``TAVILY_EXTRACT_DEPTH``, default "advanced").
@@ -264,7 +285,9 @@ def _fetch_tavily(url: str) -> tuple[str, str]:
         depth = "advanced"
 
     client = TavilyClient(api_key=api_key)
-    response = client.extract(urls=[url], extract_depth=depth, format="markdown")
+    response = client.extract(
+        urls=[url], extract_depth=depth, format="markdown", include_images=True
+    )
 
     failed = response.get("failed_results") or []
     if failed:
@@ -278,7 +301,10 @@ def _fetch_tavily(url: str) -> tuple[str, str]:
     result = results[0]
     content = _strip_linkedin_guest_preamble(str(result.get("raw_content") or ""), url)
     title = str(result.get("title") or "") or _title_from_markdown(content)
-    return title, content
+    images = [str(u) for u in (result.get("images") or []) if u]
+    if not images:
+        images = _images_from_markdown(content)
+    return title, content, images
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +502,7 @@ def fetch_linked_content(
     logger.info("GET %s [%s]", resolved, url_type)
     strategy = _strategy_for(url_type)
     try:
-        title, content = strategy(resolved)
+        title, content, images = strategy(resolved)
         logger.info("  -> %s", title[:80] if title else "(no title)")
         if _CLOUDFLARE_TITLE_MARKER in title.lower() or any(
             m in content.lower() for m in _CLOUDFLARE_BODY_MARKERS
@@ -494,6 +520,7 @@ def fetch_linked_content(
             resolved_url=resolved,
             title=title,
             content=content,
+            images=images,
             url_type=url_type,
             domain=domain,
             fetched_at=datetime.now(timezone.utc).isoformat(),

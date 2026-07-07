@@ -31,8 +31,10 @@ def _run_backend(name: str, url: str) -> FetchResult:
     """Run a single named backend strategy against *url*, never raising."""
     strategy = _BODY_BACKENDS[name]
     try:
-        title, content = strategy(url)
-        return FetchResult(url=url, resolved_url=url, title=title, content=content)
+        title, content, images = strategy(url)
+        return FetchResult(
+            url=url, resolved_url=url, title=title, content=content, images=images
+        )
     except Exception as exc:
         return FetchResult(url=url, resolved_url=url, error=str(exc))
 
@@ -59,8 +61,14 @@ def compare_url(url: str, *, out_dir: Path | None = None) -> dict[str, FetchResu
         out_dir.mkdir(parents=True, exist_ok=True)
         stem = "".join(c if c.isalnum() else "-" for c in resolved)[:80]
         for name, result in results.items():
+            images_section = (
+                "\n\n## Images\n" + "\n".join(f"- {u}" for u in result.images)
+                if result.images
+                else ""
+            )
             (out_dir / f"{stem}-{name}.md").write_text(
-                f"# {result.title}\n\n{result.content}", encoding="utf-8"
+                f"# {result.title}\n\n{result.content}{images_section}",
+                encoding="utf-8",
             )
 
     return results
@@ -74,7 +82,7 @@ def _print_summary(url: str, results: dict[str, FetchResult]) -> None:
         else:
             print(
                 f"  {name:8s} OK     {len(result.content):6d} chars  "
-                f"title={result.title[:60]!r}"
+                f"{len(result.images)} image(s)  title={result.title[:60]!r}"
             )
 
 

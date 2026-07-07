@@ -27,8 +27,12 @@ def _mock_backends(httpx_result, tavily_result):
 
 class TestCompareUrl:
     def test_runs_both_backends(self):
-        httpx_fn = lambda url: ("HTTPX Title", "httpx body")  # noqa: E731
-        tavily_fn = lambda url: ("Tavily Title", "tavily body")  # noqa: E731
+        httpx_fn = lambda url: ("HTTPX Title", "httpx body", [])  # noqa: E731
+        tavily_fn = lambda url: (  # noqa: E731
+            "Tavily Title",
+            "tavily body",
+            ["https://cdn.example.com/img.jpg"],
+        )
         with (
             patch(
                 "linkedin_api.compare_extractors.resolve_redirect",
@@ -40,11 +44,13 @@ class TestCompareUrl:
 
         assert results["httpx"].title == "HTTPX Title"
         assert results["httpx"].content == "httpx body"
+        assert results["httpx"].images == []
         assert results["tavily"].title == "Tavily Title"
         assert results["tavily"].content == "tavily body"
+        assert results["tavily"].images == ["https://cdn.example.com/img.jpg"]
 
     def test_backend_error_is_captured_not_raised(self):
-        httpx_fn = lambda url: ("Title", "body")  # noqa: E731
+        httpx_fn = lambda url: ("Title", "body", [])  # noqa: E731
 
         def tavily_fn(url):
             raise ValueError("TAVILY_API_KEY not configured")
@@ -74,7 +80,7 @@ class TestCompareUrl:
 
     def test_writes_output_files(self, tmp_path):
         out_dir = tmp_path / "cmp"
-        same_fn = lambda url: ("Title", "body text")  # noqa: E731
+        same_fn = lambda url: ("Title", "body text", [])  # noqa: E731
         with (
             patch(
                 "linkedin_api.compare_extractors.resolve_redirect",
@@ -87,3 +93,25 @@ class TestCompareUrl:
         written = {p.name for p in out_dir.glob("*.md")}
         assert any(name.endswith("-httpx.md") for name in written)
         assert any(name.endswith("-tavily.md") for name in written)
+
+    def test_writes_images_section_when_present(self, tmp_path):
+        out_dir = tmp_path / "cmp"
+        tavily_fn = lambda url: (  # noqa: E731
+            "Title",
+            "body",
+            ["https://cdn.example.com/img.jpg"],
+        )
+        httpx_fn = lambda url: ("Title", "body", [])  # noqa: E731
+        with (
+            patch(
+                "linkedin_api.compare_extractors.resolve_redirect",
+                return_value="https://example.com/article",
+            ),
+            _mock_backends(httpx_fn, tavily_fn),
+        ):
+            compare_url("https://example.com/article", out_dir=out_dir)
+
+        tavily_file = next(out_dir.glob("*-tavily.md"))
+        httpx_file = next(out_dir.glob("*-httpx.md"))
+        assert "https://cdn.example.com/img.jpg" in tavily_file.read_text()
+        assert "## Images" not in httpx_file.read_text()
