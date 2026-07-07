@@ -44,6 +44,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -220,12 +221,30 @@ def _tavily_api_key() -> str:
 
 def _title_from_markdown(content: str) -> str:
     """First non-empty line of extracted markdown, used as a title fallback
-    (Tavily's Extract API returns body content only, no separate title field)."""
+    when Tavily's response has no (or an empty) ``title`` field."""
     for line in content.splitlines():
         line = line.strip()
         if line:
             return line.lstrip("#").strip()
     return ""
+
+
+#: Tavily fetches LinkedIn post pages via the logged-out guest view, which
+#: prepends a fixed nav/sign-in preamble ("Agree & Join LinkedIn", top nav,
+#: sign-in/join links — same on every post) before the actual content. Drop
+#: everything up to this heading, where the real post starts.
+_LINKEDIN_POST_HEADING_RE = re.compile(r"^#\s+.+[’']s Post\s*$", re.MULTILINE)
+
+
+def _strip_linkedin_guest_preamble(content: str, url: str) -> str:
+    """No-op for non-LinkedIn URLs, or pages that don't match the guest-view
+    post heading (e.g. articles, profile pages) — safe to call unconditionally."""
+    if "linkedin.com" not in url:
+        return content
+    match = _LINKEDIN_POST_HEADING_RE.search(content)
+    if not match:
+        return content
+    return content[match.start() :]
 
 
 def _fetch_tavily(url: str) -> tuple[str, str]:
@@ -256,8 +275,10 @@ def _fetch_tavily(url: str) -> tuple[str, str]:
     if not results:
         raise ValueError("tavily: no content extracted")
 
-    content = str(results[0].get("raw_content") or "")
-    return _title_from_markdown(content), content
+    result = results[0]
+    content = _strip_linkedin_guest_preamble(str(result.get("raw_content") or ""), url)
+    title = str(result.get("title") or "") or _title_from_markdown(content)
+    return title, content
 
 
 # ---------------------------------------------------------------------------

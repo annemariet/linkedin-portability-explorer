@@ -760,6 +760,117 @@ class TestFetchTavily:
             with pytest.raises(ValueError, match="no content extracted"):
                 _fetch_tavily("https://example.com/empty")
 
+    def test_prefers_title_field_over_markdown_derivation(self):
+        """Tavily's response has a real ``title`` field — use it, don't derive
+        one from the first markdown line (which may be unrelated boilerplate)."""
+        mock_client = MagicMock()
+        mock_client.extract.return_value = {
+            "results": [
+                {
+                    "url": "https://example.com/article",
+                    "title": "The Real Title",
+                    "raw_content": "Some unrelated first line\n\nBody.",
+                }
+            ],
+            "failed_results": [],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            title, _ = _fetch_tavily("https://example.com/article")
+
+        assert title == "The Real Title"
+
+    def test_strips_linkedin_guest_preamble(self):
+        """Tavily's raw_content for a LinkedIn post URL includes the
+        logged-out guest-view nav/sign-in chrome before the actual post —
+        strip it, keeping from the '<Name>'s Post' heading onward."""
+        mock_client = MagicMock()
+        mock_client.extract.return_value = {
+            "results": [
+                {
+                    "url": "https://www.linkedin.com/feed/update/urn:li:activity:1/",
+                    "title": "Some Post",
+                    "raw_content": (
+                        "Agree & Join LinkedIn\n\n"
+                        "By clicking Continue...\n\n"
+                        "[Sign in](...)[Join now](...)\n\n"
+                        "# Jane Doe’s Post\n\n"
+                        "The actual post content here."
+                    ),
+                }
+            ],
+            "failed_results": [],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            _, content = _fetch_tavily(
+                "https://www.linkedin.com/feed/update/urn:li:activity:1/"
+            )
+
+        assert content.startswith("# Jane Doe’s Post")
+        assert "Agree & Join LinkedIn" not in content
+        assert "The actual post content here." in content
+
+    def test_does_not_strip_preamble_for_non_linkedin_url(self):
+        mock_client = MagicMock()
+        content_with_marker = "Agree & Join LinkedIn\n\n# Someone’s Post\n\nBody."
+        mock_client.extract.return_value = {
+            "results": [
+                {
+                    "url": "https://example.com/article",
+                    "raw_content": content_with_marker,
+                }
+            ],
+            "failed_results": [],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            _, content = _fetch_tavily("https://example.com/article")
+
+        assert content == content_with_marker
+
+    def test_does_not_strip_when_no_post_heading_found(self):
+        """LinkedIn pages without a '<Name>'s Post' heading (e.g. articles)
+        are left untouched rather than mangled by a false-positive strip."""
+        mock_client = MagicMock()
+        content = "Agree & Join LinkedIn\n\n# Some Article Title\n\nBody."
+        mock_client.extract.return_value = {
+            "results": [
+                {
+                    "url": "https://www.linkedin.com/pulse/some-article",
+                    "raw_content": content,
+                }
+            ],
+            "failed_results": [],
+        }
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client),
+        ):
+            _, result_content = _fetch_tavily(
+                "https://www.linkedin.com/pulse/some-article"
+            )
+
+        assert result_content == content
+
 
 class TestFetchLinkedContentViaTavily:
     def test_dispatches_to_tavily_end_to_end(self, monkeypatch):
