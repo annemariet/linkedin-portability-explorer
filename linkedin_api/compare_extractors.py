@@ -19,6 +19,7 @@ import argparse
 from pathlib import Path
 
 from linkedin_api.activity_csv import get_data_dir
+from linkedin_api.content_store import download_image_to_store
 from linkedin_api.fetch_linked_content import (
     _BODY_BACKENDS,
     _METADATA_ONLY_URL_TYPES,
@@ -61,9 +62,19 @@ def compare_url(url: str, *, out_dir: Path | None = None) -> dict[str, FetchResu
         out_dir.mkdir(parents=True, exist_ok=True)
         stem = "".join(c if c.isalnum() else "-" for c in resolved)[:80]
         for name, result in results.items():
+            # Download next to the .md file (out_dir/images/), same convention
+            # as the real resource store, so the comparison reflects actual
+            # production output rather than just listing remote URLs.
+            local_images = [
+                path
+                for path in (
+                    download_image_to_store(u, base_dir=out_dir) for u in result.images
+                )
+                if path
+            ]
             images_section = (
-                "\n\n## Images\n" + "\n".join(f"- {u}" for u in result.images)
-                if result.images
+                "\n\n## Images\n" + "\n".join(f"![]({p})" for p in local_images)
+                if local_images
                 else ""
             )
             (out_dir / f"{stem}-{name}.md").write_text(

@@ -59,16 +59,14 @@ def save_content(urn: str, text: str) -> Path:
     return path
 
 
-def _images_dir() -> Path:
-    d = _content_dir() / "images"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def download_image_to_store(url: str) -> str | None:
+def download_image_to_store(url: str, *, base_dir: Path | None = None) -> str | None:
     """
-    Download *url* to ``content/images/``; return a path relative to the
-    content directory (e.g. ``"images/abc123.jpg"``) or ``None`` on failure.
+    Download *url* to ``{base_dir}/images/``; return a path relative to
+    *base_dir* (e.g. ``"images/abc123.jpg"``) or ``None`` on failure.
+
+    *base_dir* defaults to the content store's own directory (so the returned
+    path is a valid markdown link from a ``.md`` file stored directly in
+    ``base_dir``, e.g. content-store posts or resource-store linked articles).
 
     Uses a URL-hash filename so repeated calls for the same URL are no-ops.
     LinkedIn CDN images have a very long expiry but downloading preserves them
@@ -85,7 +83,9 @@ def download_image_to_store(url: str) -> str | None:
     if not url:
         return None
 
-    images_dir = _images_dir()
+    root = base_dir if base_dir is not None else _content_dir()
+    images_dir = root / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
     url_hash = hashlib.sha256(url.encode()).hexdigest()[:24]
     parsed = urllib.parse.urlparse(url)
     suffix = Path(parsed.path).suffix.lower()

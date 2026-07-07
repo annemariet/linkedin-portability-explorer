@@ -15,8 +15,11 @@ Storage
 Fetched resource content is persisted in the *resource store*:
   ``get_data_dir() / "resources/"``
 Each URL is identified by the SHA-256 hash of its (resolved) URL.
-  - ``{hash}.json``  — FetchResult (including title and body text)
-  - ``{hash}.md``    — body text as plain text / future Markdown
+  - ``{hash}.json``  — FetchResult (including title, body text, local image paths)
+  - ``{hash}.md``    — body text as plain text / future Markdown, with any
+    images embedded as a trailing ``## Images`` section
+  - ``images/``      — images downloaded from the fetch strategy's remote
+    image URLs, named by URL hash (see ``content_store.download_image_to_store``)
 
 Typical pipeline
 ----------------
@@ -57,6 +60,7 @@ from linkedin_api.activity_csv import get_data_dir
 from linkedin_api.content_store import (
     _content_dir,
     _load_registry,
+    download_image_to_store,
     update_urls_metadata,
 )
 from linkedin_api.utils.auth import get_secret
@@ -379,6 +383,21 @@ def has_resource(url: str) -> bool:
     return (_resource_dir() / f"{_url_stem(url)}.json").exists()
 
 
+def _download_resource_images(image_urls: list[str], resource_dir: Path) -> list[str]:
+    """Download each remote *image_urls* entry into ``{resource_dir}/images/``.
+
+    Returns local paths (relative to *resource_dir*, e.g. ``"images/abc.jpg"``)
+    for successful downloads only — failures are silently dropped rather than
+    blocking the rest of the resource save.
+    """
+    local: list[str] = []
+    for image_url in image_urls:
+        local_path = download_image_to_store(image_url, base_dir=resource_dir)
+        if local_path:
+            local.append(local_path)
+    return local
+
+
 def save_resource(
     url: str,
     result: FetchResult,
@@ -389,10 +408,14 @@ def save_resource(
 
     Writes:
     - ``{stem}.json``  — FetchResult dict + ``cited_by`` list (always)
-    - ``{stem}.md``    — body text (only when content is non-empty)
+    - ``{stem}.md``    — body text, with any images downloaded to
+      ``resources/images/`` and embedded as a trailing ``## Images`` section
+      (only when content or images are non-empty)
 
     ``cited_by`` is merged with any existing entries so multiple posts citing
-    the same resource accumulate rather than overwrite.
+    the same resource accumulate rather than overwrite. ``result.images``
+    (remote URLs from the fetch strategy) is replaced in storage with the
+    local paths actually downloaded, so the resource is self-contained.
     """
     stem = _url_stem(url)
     resource_dir = _resource_dir()
@@ -415,18 +438,28 @@ def save_resource(
     # Store content-store hashes (sha256(urn)) so cited_by entries are
     # directly usable as filenames: content/<hash>.md / content/<hash>.meta.json
     new_hashes = [hashlib.sha256(u.encode()).hexdigest() for u in citing_post_urns if u]
+    local_images = _download_resource_images(result.images, resource_dir)
+
     data = asdict(result)
     # Strip UTM from url/resolved_url — the file is keyed by canonical URL anyway
     data["url"] = strip_utm_params(data["url"])
     data["resolved_url"] = strip_utm_params(data["resolved_url"])
+    data["images"] = local_images
     data["cited_by"] = list(dict.fromkeys(existing_cited_by + new_hashes))
     json_path.write_text(
         json.dumps(data, indent=0, ensure_ascii=False), encoding="utf-8"
     )
 
-    if result.content:
+    content = result.content
+    if local_images:
+        images_md = "\n".join(f"![]({path})" for path in local_images)
+        content = (
+            f"{content.rstrip()}\n\n## Images\n{images_md}" if content else images_md
+        )
+
+    if content:
         md_path = resource_dir / f"{stem}.md"
-        md_path.write_text(result.content, encoding="utf-8")
+        md_path.write_text(content, encoding="utf-8")
 
     return json_path
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -371,6 +372,64 @@ class TestResourceStore:
         path_a = save_resource(url_a, res_a)
         path_b = save_resource(url_b, res_b)
         assert path_a != path_b
+
+    def test_images_downloaded_and_embedded_in_markdown(self):
+        """Remote image URLs are downloaded next to the resource's .md file
+        and embedded via local path, not left as remote URLs."""
+        url = "https://example.com/with-images"
+        result = FetchResult(
+            url=url,
+            content="Body text",
+            images=["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.jpg"],
+        )
+        with patch(
+            "linkedin_api.fetch_linked_content.download_image_to_store",
+            side_effect=lambda u, base_dir: f"images/{u.rsplit('/', 1)[-1]}",
+        ) as mock_download:
+            json_path = save_resource(url, result)
+
+        assert mock_download.call_count == 2
+        md_text = json_path.with_suffix(".md").read_text()
+        assert "Body text" in md_text
+        assert "## Images" in md_text
+        assert "![](images/a.jpg)" in md_text
+        assert "![](images/b.jpg)" in md_text
+
+        stored = json.loads(json_path.read_text())
+        assert stored["images"] == ["images/a.jpg", "images/b.jpg"]
+
+    def test_failed_image_downloads_are_dropped(self):
+        url = "https://example.com/broken-image"
+        result = FetchResult(
+            url=url, content="Body", images=["https://cdn.example.com/broken.jpg"]
+        )
+        with patch(
+            "linkedin_api.fetch_linked_content.download_image_to_store",
+            return_value=None,
+        ):
+            json_path = save_resource(url, result)
+
+        md_text = json_path.with_suffix(".md").read_text()
+        assert md_text == "Body"
+        stored = json.loads(json_path.read_text())
+        assert stored["images"] == []
+
+    def test_images_only_no_content_still_writes_md(self):
+        """A resource with images but no text content still gets an .md file
+        (just the embedded images, no leading blank body)."""
+        url = "https://example.com/image-only"
+        result = FetchResult(
+            url=url, content="", images=["https://cdn.example.com/a.jpg"]
+        )
+        with patch(
+            "linkedin_api.fetch_linked_content.download_image_to_store",
+            return_value="images/a.jpg",
+        ):
+            json_path = save_resource(url, result)
+
+        md_path = json_path.with_suffix(".md")
+        assert md_path.exists()
+        assert md_path.read_text() == "![](images/a.jpg)"
 
 
 # ---------------------------------------------------------------------------
