@@ -13,6 +13,7 @@ from linkedin_api.fetch_linked_content import (
     _fetch_tavily,
     _iter_posts_with_urls,
     _strategy_for,
+    _tavily_api_key,
     fetch_linked_content,
     has_resource,
     load_resource,
@@ -560,6 +561,60 @@ class TestCloudflareDetection:
             results = process_post_linked_content([url], skip_cached=False)
         assert not has_resource(url)
         assert results[0].error == "cloudflare challenge"
+
+
+# ---------------------------------------------------------------------------
+# TAVILY_API_KEY resolution — own convention vs shared lucys-foundry keychain
+# ---------------------------------------------------------------------------
+
+
+class TestTavilyApiKeyResolution:
+    """This repo's own keyring convention (service=TAVILY_API_KEY, account=
+    LINKEDIN_ACCOUNT) predates and doesn't match lucys-foundry's shared
+    keychain (service="lucys-foundry", account="tavily", written by
+    ``manage_keys.py set tavily``). Unifying them is tracked as amai-lab ADR
+    0001 §4 / LUC-96 — until then, ``_tavily_api_key`` checks both."""
+
+    def test_uses_own_keyring_convention_first(self, monkeypatch):
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+        def fake_get_password(service, account):
+            return "own-key" if service == "TAVILY_API_KEY" else None
+
+        with patch("keyring.get_password", side_effect=fake_get_password):
+            assert _tavily_api_key() == "own-key"
+
+    def test_falls_back_to_shared_lucys_foundry_keychain(self, monkeypatch):
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+        def fake_get_password(service, account):
+            if service == "lucys-foundry" and account == "tavily":
+                return "shared-key"
+            return None
+
+        with patch("keyring.get_password", side_effect=fake_get_password):
+            assert _tavily_api_key() == "shared-key"
+
+    def test_falls_back_to_legacy_agent_fleet_rts(self, monkeypatch):
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+        def fake_get_password(service, account):
+            if service == "agent-fleet-rts" and account == "tavily":
+                return "legacy-key"
+            return None
+
+        with patch("keyring.get_password", side_effect=fake_get_password):
+            assert _tavily_api_key() == "legacy-key"
+
+    def test_falls_back_to_env_var_when_no_keyring_hit(self, monkeypatch):
+        monkeypatch.setenv("TAVILY_API_KEY", "env-key")
+        with patch("keyring.get_password", return_value=None):
+            assert _tavily_api_key() == "env-key"
+
+    def test_empty_when_nothing_configured(self, monkeypatch):
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        with patch("keyring.get_password", return_value=None):
+            assert _tavily_api_key() == ""
 
 
 # ---------------------------------------------------------------------------

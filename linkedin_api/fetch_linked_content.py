@@ -186,9 +186,36 @@ def _fetch_metadata_only(url: str) -> tuple[str, str]:
     return title, ""
 
 
+#: Shared cross-project keychain used by amai-lab's lucys-foundry
+#: ``manage_keys.py set tavily`` (service "lucys-foundry", legacy
+#: "agent-fleet-rts", account "tavily"). Unifying this with this repo's own
+#: TAVILY_API_KEY/LINKEDIN_ACCOUNT convention is tracked as amai-lab ADR 0001
+#: §4 / LUC-96 — not resolved yet, hence checking both here.
+_SHARED_TAVILY_KEYRING_LOOKUPS: tuple[tuple[str, str], ...] = (
+    ("lucys-foundry", "tavily"),
+    ("agent-fleet-rts", "tavily"),
+)
+
+
 def _tavily_api_key() -> str:
-    """TAVILY_API_KEY, via keyring first (see ``get_secret``) then env var."""
-    return get_secret("TAVILY_API_KEY") or ""
+    """Resolve TAVILY_API_KEY: this repo's own keyring convention (see
+    ``get_secret``, which also falls back to the env var), then the shared
+    lucys-foundry keychain (see ``_SHARED_TAVILY_KEYRING_LOOKUPS``)."""
+    key = get_secret("TAVILY_API_KEY")
+    if key:
+        return key
+
+    try:
+        import keyring
+
+        for service, account in _SHARED_TAVILY_KEYRING_LOOKUPS:
+            key = keyring.get_password(service, account)
+            if key:
+                return key
+    except Exception:
+        pass
+
+    return ""
 
 
 def _title_from_markdown(content: str) -> str:
