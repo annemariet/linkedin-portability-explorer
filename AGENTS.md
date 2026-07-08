@@ -4,7 +4,7 @@
 
 ### Overview
 
-Python client for LinkedIn's Portability API — fetches activity, builds a Neo4j knowledge graph, and provides GraphRAG semantic search via a Gradio UI. See `CLAUDE.md` for full architecture and command reference.
+Python client for LinkedIn's Portability API — fetches activity, enriches a local content store, and generates LLM activity reports via a Gradio UI. See `CLAUDE.md` for full architecture and command reference.
 
 ### Cursor skills for this project
 
@@ -14,10 +14,9 @@ Python client for LinkedIn's Portability API — fetches activity, builds a Neo4
 
 ### Running services
 
-- **Gradio app**: `uv run python -m linkedin_api.gradio_app` (port 7860). The UI starts without Neo4j/LLM but full pipeline requires both.
-- **Neo4j**: Required for graph operations. Not included in the repo — must be provisioned externally or via Docker. Default URI: `neo4j://localhost:7687`.
-- **LLM/Embedder**: Required for enrichment, indexing, and queries. Falls back to Ollama if no API key is set.
-- **Ollama**: Pre-installed with `llama3.2:3b` and `nomic-embed-text` models. In non-systemd environments (like this VM), start with `ollama serve &` before using LLM/embedding features. The `neo4j-graphrag[ollama]` extra is included in dependencies.
+- **Gradio app**: `uv run python -m linkedin_api.gradio_app` (port 7860). The UI starts without an LLM; full pipeline requires an API key or Ollama.
+- **LLM providers**: Mammouth (OpenAI-compatible, default), Anthropic (Claude via Anthropic's OpenAI-compatible API at `https://api.anthropic.com/v1/`), or Ollama (local).
+- **Ollama**: Pre-installed with `llama3.2:3b` and `nomic-embed-text` models. In non-systemd environments (like this VM), start with `ollama serve &` before using LLM features.
   - If missing in a fresh VM, install runtime: `curl -fsSL https://ollama.com/install.sh | sh` (if installer asks for `zstd`: `sudo apt-get update && sudo apt-get install -y zstd`).
   - Ensure default models are available: `ollama pull llama3.2:3b` and `ollama pull nomic-embed-text`.
 
@@ -31,7 +30,7 @@ All commands use `uv run` as the project manages dependencies with `uv`. See `CL
 | Tests | `uv run pytest` |
 | Format check | `uv run black --check .` |
 | Lint | `uv run flake8 linkedin_api tests examples *.py` |
-| Type check | `uv run mypy linkedin_api` (non-blocking; pre-existing errors) |
+| Type check | `uv run mypy linkedin_api` |
 | Gradio app | `uv run python -m linkedin_api.gradio_app` |
 
 ### Git & PR workflow
@@ -50,5 +49,6 @@ All commands use `uv run` as the project manages dependencies with `uv`. See `CL
 - **Python 3.12+** is required (`requires-python = ">=3.12"` in `pyproject.toml`).
 - If pipeline/report fails with `Cannot connect to Ollama` or `model ... not found`, verify `ollama list` shows `llama3.2:3b` and `nomic-embed-text`.
 - **zstd** is pre-installed as a system dependency (used by Ollama for model compression).
-- **Ollama serve must be started manually** in this VM since there is no systemd. Run `ollama serve &` and wait a few seconds before any LLM/embedding operations. The app's `_ensure_ollama_running()` in `llm_config.py` will also attempt auto-start.
+- **Ollama serve must be started manually** in this VM since there is no systemd. Run `ollama serve &` and wait a few seconds before any LLM operations. The app's `_ensure_ollama_running()` in `llm_config.py` will also attempt auto-start.
 - **Pipeline local tests**: Use `--last 1d` to reduce API fetch volume; `--limit 2` keeps enrichment/summarization cheap. With `--skip-fetch`, ensure changelog cache timestamps fall within the selected period.
+- **Anthropic provider** uses the OpenAI SDK against `https://api.anthropic.com/v1/` — no `anthropic` Python package. This avoids `ThinkingBlock` parsing issues from the native Messages API.

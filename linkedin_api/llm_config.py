@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 MAMMOUTH_BASE_URL = "https://api.mammouth.ai/v1"
+ANTHROPIC_OPENAI_BASE_URL = "https://api.anthropic.com/v1/"
 OLLAMA_DEFAULT_URL = "http://localhost:11434"
 OPENAI_COMPAT_DEFAULT_MODEL = "gpt-5-nano"
 _MAMMOUTH_UNSUPPORTED_CHAT_PREFIXES = ("gemini-2.5", "gemini-2.0-flash")
@@ -78,44 +79,6 @@ class OpenAICompatLLM(LLMClient):
             )
         content = response.choices[0].message.content or ""
         return LLMResponse(content=content)
-
-
-class AnthropicLLMClient(LLMClient):
-    def __init__(
-        self,
-        *,
-        model: str,
-        api_key: str,
-        max_tokens: int,
-    ) -> None:
-        from anthropic import Anthropic
-
-        self._model = model
-        self._max_tokens = max_tokens
-        self._client = Anthropic(api_key=api_key)
-
-    def invoke(
-        self, user_prompt: str, system_instruction: str | None = None
-    ) -> LLMResponse:
-        if system_instruction:
-            response = self._client.messages.create(
-                model=self._model,
-                max_tokens=self._max_tokens,
-                system=system_instruction,
-                messages=[{"role": "user", "content": user_prompt}],
-            )
-        else:
-            response = self._client.messages.create(
-                model=self._model,
-                max_tokens=self._max_tokens,
-                messages=[{"role": "user", "content": user_prompt}],
-            )
-        parts = [
-            block.text
-            for block in response.content
-            if hasattr(block, "text") and block.text
-        ]
-        return LLMResponse(content="".join(parts))
 
 
 class OllamaLLMClient(LLMClient):
@@ -334,20 +297,16 @@ def create_llm(
             raise RuntimeError(
                 "No Anthropic API key found. Set ANTHROPIC_API_KEY or keyring entry."
             )
-        try:
-            max_tokens = int(os.getenv("ANTHROPIC_MAX_TOKENS", "8192"))
-        except ValueError:
-            max_tokens = 8192
-        for pattern, cap in {
-            "claude-3-haiku-20240307": 4096,
-            "claude-3-5-haiku": 8000,
-        }.items():
-            if pattern in model.lower():
-                max_tokens = min(max_tokens, cap)
-                break
+        base_url = os.getenv("ANTHROPIC_BASE_URL", ANTHROPIC_OPENAI_BASE_URL)
         if not quiet:
-            print(f"  LLM: Anthropic ({model}, max_tokens={max_tokens})")
-        return AnthropicLLMClient(model=model, api_key=api_key, max_tokens=max_tokens)
+            print(f"  LLM: Anthropic via OpenAI-compatible API ({model} at {base_url})")
+        # Anthropic's OpenAI-compat layer ignores response_format; prompts request JSON.
+        return OpenAICompatLLM(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            json_mode=False,
+        )
 
     raise ValueError(f"Unknown LLM_PROVIDER: {provider!r}")
 

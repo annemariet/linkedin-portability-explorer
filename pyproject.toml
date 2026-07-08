@@ -32,7 +32,6 @@ dependencies = [
 [project.optional-dependencies]
 llm = [
     "openai==1.109.1",
-    "anthropic==0.84.0",
     "ollama==0.6.1",
 ]
 ui = [
@@ -64,7 +63,6 @@ dev = [
     "types-requests>=2.32.4.20260107",
     "types-tqdm>=4.67.3.20260205",
     "openai==1.109.1",
-    "anthropic==0.84.0",
     "ollama==0.6.1",
     "gradio==6.1.0",
 ]

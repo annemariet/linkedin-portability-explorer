@@ -104,7 +104,9 @@ def fetch_mammouth_models() -> list[tuple[str, str]]:
         req = urllib.request.Request(
             url,
             method="GET",
-            headers={"User-Agent": "Mozilla/5.0 (compatible; LinkedInGraphRAG/1.0)"},
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; linkedin-portability/1.0)"
+            },
         )
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())

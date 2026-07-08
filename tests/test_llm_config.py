@@ -3,7 +3,7 @@
 import pytest
 
 from linkedin_api.llm_config import (
-    AnthropicLLMClient,
+    OpenAICompatLLM,
     _resolve_api_key,
     _resolve_provider_model,
     create_llm,
@@ -123,12 +123,13 @@ class TestResolveApiKey:
         assert key == "sk-llm"
 
 
-def test_create_llm_anthropic_defaults(monkeypatch):
+def test_create_llm_anthropic_uses_openai_compat(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "anthropic")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xyz")
     monkeypatch.delenv("LLM_MODEL", raising=False)
 
     llm = create_llm(quiet=True)
-    assert isinstance(llm, AnthropicLLMClient)
+    assert isinstance(llm, OpenAICompatLLM)
     assert llm._model == "claude-sonnet-4-5"
-    assert llm._max_tokens == 8192
+    assert llm._client.base_url == "https://api.anthropic.com/v1/"
+    assert llm._json_mode is False
