@@ -169,6 +169,49 @@ class TestNeedsSummary:
         urn = "urn:li:ugcPost:has_summary"
         save_content(urn, "x" * 100)
         save_metadata(urn, summary="Done")
+        assert needs_summary(urn) is True
+
+    def test_content_with_tldr_only_incomplete(self):
+        urn = "urn:li:ugcPost:tldr_only"
+        save_content(urn, "x" * 250)
+        update_summary_metadata(
+            urn,
+            summary="",
+            topics=[],
+            technologies=[],
+            people=[],
+            category=None,
+            tldr="Hook sentence.",
+        )
+        assert needs_summary(urn) is True
+
+    def test_short_post_tldr_only_is_complete(self):
+        urn = "urn:li:ugcPost:short"
+        save_content(urn, "Short post.")
+        update_summary_metadata(
+            urn,
+            summary="",
+            topics=[],
+            technologies=[],
+            people=[],
+            category=None,
+            tldr="Short hook.",
+        )
+        assert needs_summary(urn) is False
+
+    def test_content_with_tldr_and_bullets_complete(self):
+        urn = "urn:li:ugcPost:complete"
+        save_content(urn, "x" * 100)
+        update_summary_metadata(
+            urn,
+            summary="Hook.\n- Point one.",
+            topics=["ai"],
+            technologies=[],
+            people=[],
+            category=None,
+            tldr="Hook.",
+            summary_bullets=["Point one."],
+        )
         assert needs_summary(urn) is False
 
 
@@ -187,11 +230,29 @@ class TestListPostsNeedingSummary:
     def test_filters_by_summary(self):
         save_content("urn:li:ugcPost:a", "a" * 100)
         save_content("urn:li:ugcPost:b", "b" * 100)
-        save_metadata("urn:li:ugcPost:b", summary="Done")
+        update_summary_metadata(
+            "urn:li:ugcPost:b",
+            summary="Done",
+            topics=[],
+            technologies=[],
+            people=[],
+            category=None,
+            tldr="Done.",
+            summary_bullets=["Detail."],
+        )
         posts = list_posts_needing_summary()
         assert len(posts) == 1
         assert posts[0]["urn"] == "urn:li:ugcPost:a"
         assert posts[0]["content"] == "a" * 100
+
+    def test_scoped_by_urns(self):
+        from linkedin_api.content_store import list_posts_for_summary
+
+        save_content("urn:li:ugcPost:in", "a" * 100)
+        save_content("urn:li:ugcPost:out", "b" * 100)
+        scoped = list_posts_for_summary(urns={"urn:li:ugcPost:in"})
+        assert len(scoped) == 1
+        assert scoped[0]["urn"] == "urn:li:ugcPost:in"
 
 
 class TestUpdateUrlsMetadata:

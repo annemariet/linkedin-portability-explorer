@@ -31,6 +31,7 @@ def _args_to_options(args) -> PipelineOptions:
         limit=args.limit,
         batch_size=args.batch_size,
         quiet=args.quiet,
+        force_resummarize=getattr(args, "force_resummarize", False),
     )
 
 
@@ -66,13 +67,20 @@ def _fetch_linked_content_streaming(args, urns: set[str] | None = None):
         return e.value or 0
 
 
-def _summarize_posts_streaming(args, summary_provider=None, summary_model=None):
+def _summarize_posts_streaming(
+    args,
+    summary_provider=None,
+    summary_model=None,
+    *,
+    urns: set[str] | None = None,
+):
     gen = summarize_posts_streaming(
         limit=args.limit,
         batch_size=args.batch_size,
         quiet=args.quiet,
         llm_provider=summary_provider,
         llm_model=summary_model,
+        urns=urns,
     )
     try:
         while True:
@@ -203,6 +211,7 @@ def run_pipeline_ui_streaming(
             args,
             summary_provider=summary_provider,
             summary_model=summary_model,
+            urns=urns or None,
         )
         try:
             while True:
@@ -252,6 +261,11 @@ def main() -> int:
         "--batch-size", type=int, default=5, help="Summarize batch size"
     )
     parser.add_argument("-q", "--quiet", action="store_true")
+    parser.add_argument(
+        "--force-resummarize",
+        action="store_true",
+        help="Re-run LLM even when TLDR and summary are already complete",
+    )
     args = parser.parse_args()
 
     opts = _args_to_options(args)

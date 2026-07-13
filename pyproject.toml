@@ -40,10 +40,14 @@ ui = [
     "linkedin-portability[llm]",
     "gradio==6.1.0",
 ]
+s3 = [
+    "boto3==1.38.36",
+]
 
 [project.scripts]
 linkedin-pipeline = "linkedin_api.run_pipeline:main"
 linkedin-gradio = "linkedin_api.gradio_app:main"
+linkedin-fetch-content = "linkedin_api.fetch_linked_content:main"
 
 [project.urls]
 Homepage = "https://github.com/annemariet/linkedin-portability-explorer"

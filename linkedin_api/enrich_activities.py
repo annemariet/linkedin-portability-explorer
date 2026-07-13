@@ -56,26 +56,40 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EnrichmentTelemetry:
-    """Counts per path (validate fallback value in production logs)."""
+    """Counts per path. Every row in a run increments exactly one of these,
+    so they should always sum to the number of rows processed — a mismatch
+    means some path is silently dropping rows uncounted."""
 
     skip_already_complete: int = 0
+    skip_missing_urn_or_url: int = 0
     merge_activity_only: int = 0
+    merge_noop: int = 0
     full_html_success: int = 0
     fallback_extract_fail_post_body: int = 0
     fallback_extract_fail_urls_only: int = 0
+    fallback_extract_fail_no_content: int = 0
     fallback_http_fail_post_body: int = 0
     fallback_http_fail_urls_only: int = 0
+    fallback_http_fail_no_content: int = 0
+
+    def total(self) -> int:
+        return sum(vars(self).values())
 
     def log_summary(self) -> None:
         msg = (
             "enrich telemetry:\n"
             f"  skip_already_complete={self.skip_already_complete}\n"
+            f"  skip_missing_urn_or_url={self.skip_missing_urn_or_url}\n"
             f"  merge_activity_only={self.merge_activity_only}\n"
+            f"  merge_noop={self.merge_noop}\n"
             f"  full_html_success={self.full_html_success}\n"
             f"  fallback_extract_fail_post_body={self.fallback_extract_fail_post_body}\n"
             f"  fallback_extract_fail_urls_only={self.fallback_extract_fail_urls_only}\n"
+            f"  fallback_extract_fail_no_content={self.fallback_extract_fail_no_content}\n"
             f"  fallback_http_fail_post_body={self.fallback_http_fail_post_body}\n"
-            f"  fallback_http_fail_urls_only={self.fallback_http_fail_urls_only}"
+            f"  fallback_http_fail_urls_only={self.fallback_http_fail_urls_only}\n"
+            f"  fallback_http_fail_no_content={self.fallback_http_fail_no_content}\n"
+            f"  total={self.total()}"
         )
         logger.info(msg)
         if os.environ.get("ENRICH_TELEMETRY", "").strip().lower() in (
@@ -200,6 +214,10 @@ def _save_from_api_fallback(
             telemetry.fallback_http_fail_urls_only += 1
         return True
 
+    if reason == "extract_fail":
+        telemetry.fallback_extract_fail_no_content += 1
+    else:
+        telemetry.fallback_http_fail_no_content += 1
     return False
 
 
@@ -254,6 +272,7 @@ def _run_enrichment(to_enrich: list[EnrichedRecord]):
         url = rec.post_url
         logger.info("Enriching %d/%d: %s", i + 1, total, url or urn or "?")
         if not (urn and url):
+            tel.skip_missing_urn_or_url += 1
             yield i + 1, total
             continue
 
@@ -278,6 +297,8 @@ def _run_enrichment(to_enrich: list[EnrichedRecord]):
             if out is not None:
                 tel.merge_activity_only += 1
                 enriched_count += 1
+            else:
+                tel.merge_noop += 1
             yield i + 1, total
             continue
 

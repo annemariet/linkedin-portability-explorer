@@ -173,6 +173,96 @@ class TestCategorizeUrl:
         result = categorize_url("https://example.com/doc.pdf")
         assert result["type"] == "document"
 
+    def test_arxiv_pdf_path(self):
+        result = categorize_url("https://arxiv.org/pdf/2511.00592")
+        assert result["type"] == "document"
+
+    def test_arxiv_html_and_abs_urls(self):
+        from linkedin_api.utils.urls import (
+            arxiv_abs_url,
+            arxiv_html_url,
+            arxiv_paper_id,
+            rewrite_fetch_url,
+        )
+
+        assert arxiv_paper_id("https://arxiv.org/pdf/2511.00592") == "2511.00592"
+        assert (
+            arxiv_html_url("https://arxiv.org/pdf/2511.00592")
+            == "https://arxiv.org/html/2511.00592"
+        )
+        assert (
+            arxiv_abs_url("https://arxiv.org/pdf/2511.00592")
+            == "https://arxiv.org/abs/2511.00592"
+        )
+        assert (
+            rewrite_fetch_url("https://arxiv.org/pdf/2511.00592")
+            == "https://arxiv.org/html/2511.00592"
+        )
+        assert (
+            rewrite_fetch_url("https://arxiv.org/abs/2511.00592v2")
+            == "https://arxiv.org/html/2511.00592v2"
+        )
+
+    def test_x_status_id(self):
+        from linkedin_api.utils.urls import is_x_status_url, x_status_id
+
+        assert (
+            x_status_id("https://x.com/akshay_pachaar/status/2069118430582866051")
+            == "2069118430582866051"
+        )
+        assert is_x_status_url("https://twitter.com/user/status/1234567890")
+
+    def test_is_plausible_resource_url_rejects_code_fragments(self):
+        from linkedin_api.utils.urls import is_plausible_resource_url
+
+        assert not is_plausible_resource_url("http://json.dumps?trk=public_post-text")
+        assert is_plausible_resource_url("https://example.com/article")
+
+    def test_should_ignore_code_fragment_hosts(self):
+        assert should_ignore_url("http://BUILD.bazel?trk=public_post-text") is True
+        assert should_ignore_url("http://df.head?trk=public_post-text") is True
+        assert should_ignore_url("http://Promise.all?trk=public_post-text") is True
+
+    def test_should_ignore_mailto(self):
+        assert should_ignore_url("mailto:jobs@flotthq.com") is True
+
+    def test_should_ignore_linkedin_chrome(self):
+        assert should_ignore_url("https://www.linkedin.com/") is True
+        assert should_ignore_url("https://www.linkedin.com/legal/cookie-policy") is True
+        assert (
+            should_ignore_url(
+                "https://www.linkedin.com/top-content/artificial-intelligence/ai-in-coding"
+            )
+            is True
+        )
+
+    def test_should_not_ignore_linkedin_redir_wrapper(self):
+        url = (
+            "https://www.linkedin.com/redir/redirect"
+            "?url=https%3A%2F%2Fexample.com%2Farticle"
+        )
+        assert should_ignore_url(url) is False
+
+    def test_fix_mojibake_smart_quotes(self):
+        from linkedin_api.utils.urls import fix_mojibake
+
+        original = 'OpenAI won\'t let you "escape" freely'
+        broken = original.encode("utf-8").decode("latin-1")
+        assert fix_mojibake(broken) == original
+
+    def test_fix_mojibake_mixed_unicode_body(self):
+        from linkedin_api.utils.urls import fix_mojibake
+
+        broken_line = "The constraint doesnâ\x80\x99t limit what the model can express"
+        assert (
+            fix_mojibake(broken_line)
+            == "The constraint doesn’t limit what the model can express"
+        )
+        mixed = "OpenAI endpoints\n" + "Ã© may be escaped in JSON as\n" + "\\u00e9\n"
+        fixed = fix_mojibake(mixed)
+        assert "é may be escaped" in fixed
+        assert "\\u00e9" in fixed
+
 
 class TestResolveRedirect:
     """Tests for lnkd.in interstitial page parsing."""
