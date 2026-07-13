@@ -12,11 +12,7 @@ from linkedin_api.activity_extract import (
     extract_activity_records,
     get_all_post_activities,
 )
-from linkedin_api.enrich_activities import enrich_activities
 from linkedin_api.enriched_record import EnrichedRecord
-from linkedin_api.summarize_activity import collect_from_csv, ensure_csv_fetched
-from linkedin_api.summarize_posts import summarize_posts
-from linkedin_api.summarize_resources import summarize_resources
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +31,9 @@ def collect_period(
     options: PipelineOptions,
 ) -> tuple[list[EnrichedRecord], int]:
     """Collect activities for a period (fetch + CSV load). Returns (records, count)."""
+    # Lazy import: eager import breaks ``python -m linkedin_api.summarize_activity``.
+    from linkedin_api.summarize_activity import collect_from_csv, ensure_csv_fetched
+
     last = options.last or "30d"
     start_dt = end_dt = None
     start_ms = parse_period(last)
@@ -63,6 +62,9 @@ def enrich_records(
     quiet: bool = False,
 ) -> int:
     """Enrich activities into the content store. Returns count enriched."""
+    # Lazy import: eager import breaks ``python -m linkedin_api.enrich_activities``.
+    from linkedin_api.enrich_activities import enrich_activities
+
     _, count = enrich_activities(activities, limit=limit)
     if not quiet:
         print(f"Enriched {count} activities")
@@ -95,6 +97,10 @@ def summarize_linked_resources(
     urns: set[str] | None = None,
 ) -> int:
     """Summarize fetched linked articles lacking LLM summary."""
+    # Lazy import: eager import breaks ``python -m linkedin_api.summarize_resources``
+    # (and transitively ``python -m linkedin_api.fetch_linked_content``).
+    from linkedin_api.summarize_resources import summarize_resources
+
     n = summarize_resources(
         limit=options.limit,
         quiet=options.quiet,
@@ -119,6 +125,9 @@ def summarize_records(
     urns: set[str] | None = None,
 ) -> int:
     """Summarize posts lacking summary metadata. Returns count summarized."""
+    # Lazy import: eager import breaks ``python -m linkedin_api.summarize_posts``.
+    from linkedin_api.summarize_posts import summarize_posts
+
     n = summarize_posts(
         limit=options.limit,
         batch_size=options.batch_size,
