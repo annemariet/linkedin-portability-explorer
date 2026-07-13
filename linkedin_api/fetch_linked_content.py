@@ -497,12 +497,11 @@ def _urls_from_metadata(meta: dict) -> list[str]:
 
 
 def _iter_posts_with_urls(urns: set[str] | None = None):
-    """Yield (urn, urls) for posts that have URLs.
+    """Yield ``(post_urn, urls)`` for posts that have URLs.
 
     Args:
-        urns: When provided, only posts whose URN is in this set are yielded.
-              Pass the set of URNs from the current fetch period to avoid
-              re-processing the entire content store every run.
+        urns: When provided, only posts whose ``post_id`` (or legacy ``post_urn``)
+              is in this set are yielded. Pipeline passes ``post_id`` values here.
 
     First checks ``urls`` and ``mentions`` in ``.meta.json``; if empty, falls back to
     extracting URLs from the ``.md`` content file and persists them so future
@@ -518,21 +517,24 @@ def _iter_posts_with_urls(urns: set[str] | None = None):
             continue
 
         stem = meta_path.name.replace(".meta.json", "")
-        urn = registry.get(stem, "")
+        post_id = (str(meta.get("post_id") or "")).strip() or (
+            stem if stem.isdigit() else ""
+        )
+        post_urn = (meta.get("post_urn") or registry.get(stem) or "").strip()
 
-        if urns is not None and urn not in urns:
+        if urns is not None and post_id not in urns and post_urn not in urns:
             continue
 
         urls = _urls_from_metadata(meta)
-        if not urls and urn:
+        if not urls and (post_id or post_urn):
             md_path = content_dir / f"{stem}.md"
             if md_path.exists():
                 text = md_path.read_text(encoding="utf-8")
                 extracted = [
                     u for u in extract_urls_from_text(text) if not should_ignore_url(u)
                 ]
-                if extracted:
-                    update_urls_metadata(urn, extracted)
+                if extracted and post_id:
+                    update_urls_metadata(post_id, extracted, post_urn=post_urn)
                     try:
                         meta = json.loads(meta_path.read_text(encoding="utf-8"))
                     except (json.JSONDecodeError, OSError):
@@ -542,7 +544,7 @@ def _iter_posts_with_urls(urns: set[str] | None = None):
 
         if not urls:
             continue
-        yield urn, urls
+        yield post_urn or f"urn:li:ugcPost:{post_id}", urls
 
 
 def main() -> int:

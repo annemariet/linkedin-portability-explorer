@@ -62,13 +62,14 @@ class TestEnrichSavesTimestamps:
         monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
 
     def test_reaction_timestamp_and_post_created_saved_to_metadata(self):
-        urn = "urn:li:ugcPost:123456"
-        url = "https://www.linkedin.com/feed/update/urn:li:ugcPost:123456"
+        post_id = "123456"
+        urn = f"urn:li:ugcPost:{post_id}"
+        url = f"https://www.linkedin.com/feed/update/{urn}"
         ts_ms = 1700000000000
         post_created = "2024-01-15T10:30:00Z"
 
-        save_content(urn, "x" * 100)
-        assert not has_metadata(urn)
+        save_content(post_id, "x" * 100, post_urn=urn)
+        assert not has_metadata(post_id, post_urn=urn)
 
         activities = [
             EnrichedRecord(
@@ -79,7 +80,7 @@ class TestEnrichSavesTimestamps:
                 interaction_type="reaction",
                 reaction_type=None,
                 comment_text="",
-                post_id="",
+                post_id=post_id,
                 activity_id="",
                 timestamp=ts_ms,
                 created_at="",
@@ -89,7 +90,7 @@ class TestEnrichSavesTimestamps:
         _, count = enrich_activities(activities)
         assert count == 1
 
-        meta = load_metadata(urn)
+        meta = load_metadata(post_id, post_urn=urn)
         assert meta is not None
         assert meta.get("activity_time_iso") == "2023-11-14T22:13:20+00:00"
         assert meta.get("post_created_at") == post_created
@@ -124,11 +125,11 @@ class TestEnrichSavesTimestamps:
         ):
             _, count = enrich_activities(activities)
         assert count == 1
-        stored = load_content(urn)
+        stored = load_content("7445812127325401089", post_urn=urn)
         assert api_text in (stored or "")
         assert "500 million" not in (stored or "")
         assert "https://example.org/paper" in (stored or "")
-        meta = load_metadata(urn)
+        meta = load_metadata("7445812127325401089", post_urn=urn)
         assert meta is not None
         assert meta.get("urls") == ["https://example.org/paper"]
 
@@ -156,4 +157,4 @@ class TestEnrichSavesTimestamps:
                 ]
             )
         assert count == 0
-        assert load_content(urn) is None
+        assert load_content("999", post_urn=urn) is None

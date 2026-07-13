@@ -12,14 +12,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from linkedin_api.activity_csv import ActivityRecord, ActivityType
+from linkedin_api.content_keys import (
+    resolve_post_id,
+    resolve_post_url,
+    resolve_post_urn,
+)
 from linkedin_api.utils.urls import extract_urls_from_text
-from linkedin_api.utils.urns import comment_urn_to_post_url, urn_to_post_url
-
-
-def _urn_to_url(urn: str) -> str:
-    if urn.startswith("urn:li:comment:"):
-        return comment_urn_to_post_url(urn) or ""
-    return urn_to_post_url(urn) or ""
 
 
 def _format_timestamp(ts_ms: int | None) -> str:
@@ -64,10 +62,9 @@ class EnrichedRecord:
         ts = int(rec.time) if rec.time else None
         interaction_type = _TYPE_TO_INTERACTION.get(rec.activity_type, "reaction")
         is_comment = rec.activity_type == ActivityType.COMMENT.value
-        post_urn = (
-            rec.parent_urn or rec.activity_urn if is_comment else rec.activity_urn
-        )
-        post_url = rec.post_url or _urn_to_url(post_urn)
+        post_id = resolve_post_id(rec)
+        post_urn = resolve_post_urn(rec)
+        post_url = resolve_post_url(rec)
         return cls(
             post_urn=post_urn,
             post_url=post_url,
@@ -76,7 +73,7 @@ class EnrichedRecord:
             interaction_type=interaction_type,
             reaction_type=rec.reaction_type or None,
             comment_text=rec.content if is_comment else "",
-            post_id=rec.post_id,
+            post_id=post_id,
             activity_id=rec.activity_id,
             timestamp=ts,
             created_at=rec.created_at or _format_timestamp(ts),

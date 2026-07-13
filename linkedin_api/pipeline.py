@@ -119,7 +119,7 @@ def run_pipeline(
 
     activities, collected = collect_period(opts)
     enriched = enrich_records(activities, limit=opts.limit, quiet=opts.quiet)
-    urns = {rec.post_urn for rec in activities if rec.post_urn}
+    urns = {rec.post_id for rec in activities if rec.post_id}
     urls_fetched = fetch_linked_urls(opts, urns=urns)
     summarized = summarize_records(opts, llm_provider=llm_provider, llm_model=llm_model)
     stats = {

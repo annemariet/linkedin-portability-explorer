@@ -96,21 +96,24 @@ def _parse_llm_response(text: str, urns: list[str]) -> list[dict]:
 def _summarize_batch(posts: list[dict], llm) -> int:
     """Summarize one batch. Returns count updated."""
     user_prompt = _USER_PROMPT_TEMPLATE.format(posts=_build_prompt_batch(posts))
-    urns = [p["urn"] for p in posts]
+    urns = [p.get("urn") or "" for p in posts]
+    post_id_by_urn = {p.get("urn") or "": p.get("post_id") or "" for p in posts}
     try:
         response = llm.invoke(user_prompt, system_instruction=_SYSTEM_PROMPT)
         content = response.content if hasattr(response, "content") else str(response)
         parsed = _parse_llm_response(content, urns)
         for p in parsed:
             urn = p["urn"]
-            if urn:
+            post_id = post_id_by_urn.get(urn, "")
+            if post_id:
                 update_summary_metadata(
-                    urn,
+                    post_id,
                     summary=p["summary"],
                     topics=p["topics"],
                     technologies=p["technologies"],
                     people=p["people"],
                     category=p.get("category"),
+                    post_urn=urn,
                 )
         return len(parsed)
     except Exception as e:

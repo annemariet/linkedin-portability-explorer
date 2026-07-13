@@ -126,31 +126,33 @@ def _get_posts_for_period(
     path = csv_path or get_default_csv_path()
     start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
     end_dt = datetime.now(timezone.utc)
-    urn_to_activity: dict[str, EnrichedRecord] = {}
+    post_id_to_activity: dict[str, EnrichedRecord] = {}
     try:
         for a in collect_from_csv(start=start_dt, end=end_dt, csv_path=path):
-            urn = (a.post_urn or "").strip()
+            pid = (a.post_id or "").strip()
             ts_ms = int(a.timestamp) if a.timestamp is not None else None
-            if urn and ts_ms is not None and start_ms <= ts_ms <= end_ms:
-                urn_to_activity[urn] = a
+            if pid and ts_ms is not None and start_ms <= ts_ms <= end_ms:
+                existing = post_id_to_activity.get(pid)
+                if existing is None or (a.timestamp or 0) > (existing.timestamp or 0):
+                    post_id_to_activity[pid] = a
     except OSError:
         pass
 
-    if not urn_to_activity:
+    if not post_id_to_activity:
         return [], period_dates
 
     scoped = [
         m
         for m in list_summarized_metadata()
-        if (m.get("urn") or "").strip() in urn_to_activity
+        if (m.get("post_id") or "").strip() in post_id_to_activity
     ]
     for m in scoped:
-        act = urn_to_activity.get((m.get("urn") or "").strip())
+        act = post_id_to_activity.get((m.get("post_id") or "").strip())
         if act and act.timestamp is not None:
             m["activity_time_iso"] = _ms_to_iso(int(act.timestamp))
 
     def _activity_ts(meta: dict) -> int:
-        act = urn_to_activity.get((meta.get("urn") or "").strip())
+        act = post_id_to_activity.get((meta.get("post_id") or "").strip())
         if act and act.timestamp is not None:
             return int(act.timestamp)
         return 0
@@ -188,8 +190,8 @@ def _format_post_for_prompt(
 
     if content_level == CONTENT_LEVEL_MINIMAL:
         body = tag_part
-    elif content_level == CONTENT_LEVEL_FULL and m.get("urn"):
-        content = load_content(m["urn"])
+    elif content_level == CONTENT_LEVEL_FULL and m.get("post_id"):
+        content = load_content(m["post_id"], post_urn=m.get("urn") or "")
         full_text = (
             _truncate(content, max_full_post_chars) if content else (m["summary"] or "")
         )

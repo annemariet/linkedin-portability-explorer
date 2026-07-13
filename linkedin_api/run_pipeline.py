@@ -176,7 +176,7 @@ def run_pipeline_ui_streaming(
         lines[-1] = f"Enriched {n2} activities."
         yield _snapshot()
 
-        urns = {rec.post_urn for rec in activities if rec.post_urn}
+        urns = {rec.post_id for rec in activities if rec.post_id}
         n_urls = 0
         lines.append("Fetching linked URLs…")
         gen = _fetch_linked_content_streaming(args, urns=urns)

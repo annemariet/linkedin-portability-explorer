@@ -27,209 +27,237 @@ def use_tmp_data_dir(monkeypatch, tmp_path):
 
 class TestSaveAndLoad:
     def test_roundtrip(self):
-        urn = "urn:li:ugcPost:123456"
-        save_content(urn, "Hello world")
-        assert load_content(urn) == "Hello world"
+        post_id = "123456"
+        urn = f"urn:li:ugcPost:{post_id}"
+        save_content(post_id, "Hello world", post_urn=urn)
+        assert load_content(post_id, post_urn=urn) == "Hello world"
 
     def test_overwrite(self):
-        urn = "urn:li:ugcPost:123456"
-        save_content(urn, "v1")
-        save_content(urn, "v2")
-        assert load_content(urn) == "v2"
+        post_id = "123456"
+        urn = f"urn:li:ugcPost:{post_id}"
+        save_content(post_id, "v1", post_urn=urn)
+        save_content(post_id, "v2", post_urn=urn)
+        assert load_content(post_id, post_urn=urn) == "v2"
 
     def test_unicode_content(self):
-        urn = "urn:li:ugcPost:999"
+        post_id = "999"
+        urn = f"urn:li:ugcPost:{post_id}"
         text = "Inscrite ! Merci pour l'info \U0001f44d\U0001f3fb"
-        save_content(urn, text)
-        assert load_content(urn) == text
+        save_content(post_id, text, post_urn=urn)
+        assert load_content(post_id, post_urn=urn) == text
 
     def test_multiline_content(self):
-        urn = "urn:li:ugcPost:888"
+        post_id = "888"
+        urn = f"urn:li:ugcPost:{post_id}"
         text = "Line 1\nLine 2\n\nLine 4"
-        save_content(urn, text)
-        assert load_content(urn) == text
+        save_content(post_id, text, post_urn=urn)
+        assert load_content(post_id, post_urn=urn) == text
 
-    def test_save_empty_urn_raises(self):
+    def test_save_empty_post_id_raises(self):
         with pytest.raises(ValueError):
             save_content("", "some text")
 
     def test_save_empty_text_raises(self):
         with pytest.raises(ValueError):
-            save_content("urn:li:ugcPost:1", "")
+            save_content("1", "")
 
 
 class TestLoadContent:
-    def test_missing_urn_returns_none(self):
-        assert load_content("urn:li:ugcPost:nonexistent") is None
+    def test_missing_post_returns_none(self):
+        assert load_content("9999999999999999999") is None
 
-    def test_empty_urn_returns_none(self):
+    def test_empty_post_id_returns_none(self):
         assert load_content("") is None
 
 
 class TestHasContent:
     def test_exists_after_save(self):
-        urn = "urn:li:ugcPost:777"
-        assert has_content(urn) is False
-        save_content(urn, "stored")
-        assert has_content(urn) is True
+        post_id = "777"
+        urn = f"urn:li:ugcPost:{post_id}"
+        assert has_content(post_id, post_urn=urn) is False
+        save_content(post_id, "stored", post_urn=urn)
+        assert has_content(post_id, post_urn=urn) is True
 
-    def test_empty_urn(self):
+    def test_empty_post_id(self):
         assert has_content("") is False
 
 
 class TestContentPath:
     def test_returns_path(self):
-        path = content_path("urn:li:ugcPost:123")
+        path = content_path("123")
         assert path.suffix == ".md"
+        assert path.name == "123.md"
         assert "content" in str(path)
 
-    def test_different_urns_different_paths(self):
-        p1 = content_path("urn:li:ugcPost:111")
-        p2 = content_path("urn:li:ugcPost:222")
+    def test_different_post_ids_different_paths(self):
+        p1 = content_path("111")
+        p2 = content_path("222")
         assert p1 != p2
 
 
 class TestMetadata:
     def test_save_and_load_metadata(self):
-        urn = "urn:li:ugcPost:456"
-        save_content(urn, "Content here")
+        post_id = "456"
+        urn = f"urn:li:ugcPost:{post_id}"
+        save_content(post_id, "Content here", post_urn=urn)
         save_metadata(
-            urn, summary="A summary", topics=["AI"], urls=["https://example.com"]
+            post_id,
+            summary="A summary",
+            topics=["AI"],
+            urls=["https://example.com"],
+            post_urn=urn,
         )
-        meta = load_metadata(urn)
+        meta = load_metadata(post_id, post_urn=urn)
         assert meta["summary"] == "A summary"
         assert meta["topics"] == ["AI"]
         assert meta["urls"] == resolve_urls_for_metadata(["https://example.com"])
 
     def test_update_preserves_urls(self):
-        urn = "urn:li:ugcPost:789"
-        save_content(urn, "Post content")
+        post_id = "789"
+        urn = f"urn:li:ugcPost:{post_id}"
+        save_content(post_id, "Post content", post_urn=urn)
         save_metadata(
-            urn, urls=["https://x.com"], post_url="https://linkedin.com/feed/..."
+            post_id,
+            urls=["https://x.com"],
+            post_url="https://linkedin.com/feed/...",
+            post_urn=urn,
         )
-        update_summary_metadata(urn, "Summary", ["topic1"], ["py"], ["Alice"], "paper")
-        meta = load_metadata(urn)
+        update_summary_metadata(
+            post_id,
+            "Summary",
+            ["topic1"],
+            ["py"],
+            ["Alice"],
+            "paper",
+            post_urn=urn,
+        )
+        meta = load_metadata(post_id, post_urn=urn)
         assert meta["summary"] == "Summary"
         assert meta["urls"] == resolve_urls_for_metadata(["https://x.com"])
         assert meta["post_url"] == "https://linkedin.com/feed/..."
         assert "summarized_at" in meta
 
     def test_schema_fields_and_activities_ids_merge(self):
-        urn = "urn:li:activity:7437247151593857024"
-        save_content(urn, "x" * 100)
+        post_id = "7437247151593857024"
+        urn = f"urn:li:activity:{post_id}"
+        save_content(post_id, "x" * 100, post_urn=urn)
         save_metadata(
-            urn,
+            post_id,
             post_url="https://www.linkedin.com/posts/example",
             post_urn=urn,
-            post_id="7437247151593857024",
             post_author="Scott Condron",
             post_author_url="https://www.linkedin.com/in/condronscott/",
             activities_ids=["id-reaction-1"],
             urls=["https://github.com/foo/bar"],
         )
         save_metadata(
-            urn,
+            post_id,
             activities_ids=["id-comment-2"],
             urls=["https://github.com/foo/bar"],
             post_url="https://www.linkedin.com/posts/example",
+            post_urn=urn,
         )
-        meta = load_metadata(urn)
+        meta = load_metadata(post_id, post_urn=urn)
         assert meta["post_urn"] == urn
-        assert meta["post_id"] == "7437247151593857024"
+        assert meta["post_id"] == post_id
         assert meta["post_author"] == "Scott Condron"
         assert meta["post_author_url"] == "https://www.linkedin.com/in/condronscott/"
         assert meta["activities_ids"] == ["id-reaction-1", "id-comment-2"]
 
     def test_merge_post_identity_noop_returns_none(self):
+        post_id = "1"
         urn = "urn:li:activity:merge_noop"
-        save_content(urn, "x" * 100)
-        save_metadata(urn, summary="S", post_urn=urn, post_id="1", activities_ids=["a"])
+        save_content(post_id, "x" * 100, post_urn=urn)
+        save_metadata(post_id, summary="S", post_urn=urn, activities_ids=["a"])
         assert (
-            merge_post_identity(
-                urn, post_id="1", post_urn=urn, extra_activity_ids=["a"]
-            )
-            is None
+            merge_post_identity(post_id, post_urn=urn, extra_activity_ids=["a"]) is None
         )
 
 
 class TestNeedsSummary:
     def test_no_content(self):
-        assert needs_summary("urn:li:ugcPost:no_content") is False
+        assert needs_summary("9999999999999999999") is False
 
     def test_content_without_summary(self):
-        urn = "urn:li:ugcPost:needs_summary"
-        save_content(urn, "x" * 100)
-        assert needs_summary(urn) is True
+        post_id = "12345"
+        urn = f"urn:li:ugcPost:{post_id}"
+        save_content(post_id, "x" * 100, post_urn=urn)
+        assert needs_summary(post_id, post_urn=urn) is True
 
     def test_content_with_summary(self):
-        urn = "urn:li:ugcPost:has_summary"
-        save_content(urn, "x" * 100)
-        save_metadata(urn, summary="Done")
-        assert needs_summary(urn) is False
+        post_id = "67890"
+        urn = f"urn:li:ugcPost:{post_id}"
+        save_content(post_id, "x" * 100, post_urn=urn)
+        save_metadata(post_id, summary="Done", post_urn=urn)
+        assert needs_summary(post_id, post_urn=urn) is False
 
 
 class TestListSummarizedMetadata:
     def test_includes_urn_for_content_lookup(self):
-        urn = "urn:li:ugcPost:listed"
-        save_content(urn, "x" * 100)
-        save_metadata(urn, summary="A summary")
+        post_id = "listed"
+        urn = f"urn:li:ugcPost:{post_id}"
+        save_content(post_id, "x" * 100, post_urn=urn)
+        save_metadata(post_id, summary="A summary", post_urn=urn)
         metas = list_summarized_metadata()
         assert len(metas) == 1
+        assert metas[0]["post_id"] == post_id
         assert metas[0]["urn"] == urn
         assert metas[0]["summary"] == "A summary"
 
 
 class TestListPostsNeedingSummary:
     def test_filters_by_summary(self):
-        save_content("urn:li:ugcPost:a", "a" * 100)
-        save_content("urn:li:ugcPost:b", "b" * 100)
-        save_metadata("urn:li:ugcPost:b", summary="Done")
+        save_content("100", "a" * 100, post_urn="urn:li:ugcPost:100")
+        save_content("200", "b" * 100, post_urn="urn:li:ugcPost:200")
+        save_metadata("200", summary="Done", post_urn="urn:li:ugcPost:200")
         posts = list_posts_needing_summary()
         assert len(posts) == 1
-        assert posts[0]["urn"] == "urn:li:ugcPost:a"
+        assert posts[0]["post_id"] == "100"
+        assert posts[0]["urn"] == "urn:li:ugcPost:100"
         assert posts[0]["content"] == "a" * 100
 
 
 class TestUpdateUrlsMetadata:
-    def test_sets_urls_on_new_urn(self):
-        urn = "urn:li:ugcPost:urls_new"
-        update_urls_metadata(urn, ["https://example.com"])
-        meta = load_metadata(urn)
+    def test_sets_urls_on_new_post(self):
+        post_id = "urls_new"
+        update_urls_metadata(post_id, ["https://example.com"])
+        meta = load_metadata(post_id)
         assert meta is not None
-        # resolve_redirect normalises example.com → example.com/ (trailing slash)
         assert meta["urls"][0].rstrip("/") == "https://example.com"
 
     def test_preserves_existing_summary(self):
-        urn = "urn:li:ugcPost:urls_preserve"
-        save_content(urn, "Post text")
-        save_metadata(urn, summary="Keep me", topics=["AI"])
-        update_urls_metadata(urn, ["https://arxiv.org/abs/123"])
-        meta = load_metadata(urn)
+        post_id = "urls_preserve"
+        urn = f"urn:li:ugcPost:{post_id}"
+        save_content(post_id, "Post text", post_urn=urn)
+        save_metadata(post_id, summary="Keep me", topics=["AI"], post_urn=urn)
+        update_urls_metadata(post_id, ["https://arxiv.org/abs/123"], post_urn=urn)
+        meta = load_metadata(post_id, post_urn=urn)
         assert meta["summary"] == "Keep me"
         assert meta["topics"] == ["AI"]
         assert meta["urls"] == ["https://arxiv.org/abs/123"]
 
     def test_overwrites_existing_urls(self):
-        urn = "urn:li:ugcPost:urls_overwrite"
-        save_metadata(urn, urls=["https://old.example.com"])
-        update_urls_metadata(urn, ["https://new.example.com"])
-        meta = load_metadata(urn)
+        post_id = "urls_overwrite"
+        save_metadata(post_id, urls=["https://old.example.com"])
+        update_urls_metadata(post_id, ["https://new.example.com"])
+        meta = load_metadata(post_id)
         assert meta["urls"] == ["https://new.example.com"]
 
     def test_empty_list(self):
-        urn = "urn:li:ugcPost:urls_empty"
-        update_urls_metadata(urn, [])
-        meta = load_metadata(urn)
+        post_id = "urls_empty"
+        update_urls_metadata(post_id, [])
+        meta = load_metadata(post_id)
         assert meta["urls"] == []
 
 
 class TestDeduplication:
-    def test_same_urn_one_file(self):
-        """Multiple saves for same URN → one content file."""
-        post_urn = "urn:li:ugcPost:xyz"
+    def test_same_post_id_one_file(self):
+        """Multiple saves for same post_id → one content file."""
+        post_id = "7482038400523575296"
+        urn = f"urn:li:ugcPost:{post_id}"
         content = "This is the post body."
-        save_content(post_urn, content)
-        save_content(post_urn, content)
-        assert load_content(post_urn) == content
-        content_dir = content_path(post_urn).parent
+        save_content(post_id, content, post_urn=urn)
+        save_content(post_id, content, post_urn=urn)
+        assert load_content(post_id, post_urn=urn) == content
+        content_dir = content_path(post_id).parent
         assert len(list(content_dir.glob("*.md"))) == 1

@@ -63,33 +63,32 @@ def _load_registry(content_dir: Path) -> dict[str, str]:
     return cast(dict[str, str], json.loads(p.read_text(encoding="utf-8")))
 
 
-def _aggregate_csv_by_post_urn(
+def _aggregate_csv_by_post_id(
     csv_path: Path,
 ) -> tuple[dict[str, list[str]], dict[str, list[str]], int]:
-    """post_urn -> activity_ids; post_urn -> urls from CSV row text."""
+    """post_id -> activity_ids; post_id -> urls from CSV row text."""
     records = load_records_csv(csv_path)
     n_rows = len(records)
-    by_urn: dict[str, list[str]] = {}
-    urls_by_urn: dict[str, list[str]] = {}
+    by_id: dict[str, list[str]] = {}
+    urls_by_id: dict[str, list[str]] = {}
     for rec in records:
         er = EnrichedRecord.from_activity_record(rec)
-        urn = (er.post_urn or "").strip()
-        if not urn:
+        pid = (er.post_id or "").strip()
+        if not pid:
             continue
         aid = (rec.activity_id or "").strip()
         if aid:
-            if urn not in by_urn:
-                by_urn[urn] = []
-            if aid not in by_urn[urn]:
-                by_urn[urn].append(aid)
+            by_id.setdefault(pid, [])
+            if aid not in by_id[pid]:
+                by_id[pid].append(aid)
         for u in er.urls:
             u = (u or "").strip()
             if not u:
                 continue
-            urls_by_urn.setdefault(urn, [])
-            if u not in urls_by_urn[urn]:
-                urls_by_urn[urn].append(u)
-    return by_urn, urls_by_urn, n_rows
+            urls_by_id.setdefault(pid, [])
+            if u not in urls_by_id[pid]:
+                urls_by_id[pid].append(u)
+    return by_id, urls_by_id, n_rows
 
 
 def _post_id_from_urn(urn: str) -> str:
@@ -109,7 +108,8 @@ def _author_only_jobs(
             continue
         if not (content_dir / f"{stem}.meta.json").exists():
             continue
-        meta = load_metadata(urn)
+        post_id = stem if stem.isdigit() else _post_id_from_urn(urn)
+        meta = load_metadata(post_id, post_urn=urn)
         if meta is None:
             continue
         if (str(meta.get("post_author") or "")).strip():
@@ -136,7 +136,8 @@ def _html_fetch_jobs(
             continue
         if not (content_dir / f"{stem}.meta.json").exists():
             continue
-        meta = load_metadata(urn)
+        post_id = stem if stem.isdigit() else _post_id_from_urn(urn)
+        meta = load_metadata(post_id, post_urn=urn)
         if meta is None:
             continue
         post_url = (meta.get("post_url") or "").strip()
@@ -214,7 +215,7 @@ def main() -> int:
         logger.error("No _urn_registry.json under %s", content_dir)
         return 1
 
-    by_urn, urls_by_urn, n_csv_rows = _aggregate_csv_by_post_urn(csv_path)
+    by_id, urls_by_id, n_csv_rows = _aggregate_csv_by_post_id(csv_path)
     stems = sorted(registry.keys())
     eligible = [
         s
@@ -237,13 +238,14 @@ def main() -> int:
         file=sys.stderr,
     ):
         urn = (registry.get(stem) or "").strip()
-        extra_ids = by_urn.get(urn, [])
-        pid = _post_id_from_urn(urn)
+        post_id = stem if stem.isdigit() else _post_id_from_urn(urn)
+        if not post_id:
+            continue
+        extra_ids = by_id.get(post_id, [])
         if args.dry_run:
             continue
         out = merge_post_identity(
-            urn,
-            post_id=pid,
+            post_id,
             post_urn=urn,
             extra_activity_ids=extra_ids,
         )
@@ -271,7 +273,8 @@ def main() -> int:
         for _stem, urn, post_url in tqdm(
             jobs, desc="fetch-html", unit="GET", disable=not use_tqdm, file=sys.stderr
         ):
-            meta = load_metadata(urn)
+            post_id = _stem if _stem.isdigit() else _post_id_from_urn(urn)
+            meta = load_metadata(post_id, post_urn=urn)
             if meta is None:
                 continue
             fetched = fetch_linkedin_post_html(post_url, timeout=args.timeout)
@@ -287,7 +290,7 @@ def main() -> int:
                 if args.sleep > 0:
                     time.sleep(args.sleep)
                 continue
-            api_urls = urls_by_urn.get(urn, [])
+            api_urls = urls_by_id.get(post_id, [])
             post_created = (ext.html_meta.get("post_created_at") or "").strip() or None
             if not post_created:
                 try:
@@ -299,16 +302,16 @@ def main() -> int:
                 except Exception:
                     post_created = None
             save_extraction_to_store(
-                urn=urn,
+                post_id=post_id,
+                post_urn=urn,
                 post_url=post_url,
                 ext=ext,
                 urls_from_api=api_urls,
                 activity_time_iso=(meta.get("activity_time_iso") or "").strip() or "",
                 post_created=post_created or "",
-                post_id=str(meta.get("post_id") or "") or _post_id_from_urn(urn),
                 activities_ids=list(
                     dict.fromkeys(
-                        (meta.get("activities_ids") or []) + by_urn.get(urn, [])
+                        (meta.get("activities_ids") or []) + by_id.get(post_id, [])
                     )
                 ),
             )
@@ -330,7 +333,8 @@ def main() -> int:
         for _stem, urn, post_url in tqdm(
             jobs, desc="Author fetch", unit="GET", disable=not use_tqdm, file=sys.stderr
         ):
-            meta = load_metadata(urn)
+            post_id = _stem if _stem.isdigit() else _post_id_from_urn(urn)
+            meta = load_metadata(post_id, post_urn=urn)
             if meta is None:
                 continue
             html_meta = _fetch_author_only(post_url, args.timeout)
@@ -351,7 +355,7 @@ def main() -> int:
             ):
                 kwargs["post_created_at"] = html_meta["post_created_at"]
             if kwargs:
-                update_metadata_fields(urn, **kwargs)
+                update_metadata_fields(post_id, post_urn=urn, **kwargs)
             if args.sleep > 0:
                 time.sleep(args.sleep)
         return 0

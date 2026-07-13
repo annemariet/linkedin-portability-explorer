@@ -110,12 +110,13 @@ def _row_needs_work(rec: EnrichedRecord) -> tuple[str, dict | None]:
     """
     ``skip`` | ``merge`` | ``full`` — see module docstring.
     """
-    urn = rec.post_urn
-    meta = load_metadata(urn)
+    post_id = rec.post_id
+    post_urn = rec.post_urn
+    meta = load_metadata(post_id, post_urn=post_urn)
     if meta is None:
         return "full", None
 
-    if not has_content(urn):
+    if not has_content(post_id, post_urn=post_urn):
         return "full", meta
 
     if _meta_version(meta) != ENRICHMENT_VERSION:
@@ -129,7 +130,8 @@ def _row_needs_work(rec: EnrichedRecord) -> tuple[str, dict | None]:
 
 def _save_from_api_fallback(
     rec: EnrichedRecord,
-    urn: str,
+    post_id: str,
+    post_urn: str,
     url: str,
     post_created: str | None,
     *,
@@ -149,9 +151,9 @@ def _save_from_api_fallback(
         meta_urls = resolve_urls_for_metadata(u)
         body = append_missing_resource_urls(api_body, meta_urls)
         rec.urls = meta_urls
-        save_content(urn, body)
+        save_content(post_id, body, post_urn=post_urn)
         save_metadata(
-            urn,
+            post_id,
             urls=meta_urls,
             mentions=m,
             tags=t,
@@ -162,8 +164,7 @@ def _save_from_api_fallback(
                 int(rec.timestamp) if rec.timestamp is not None else None
             ),
             post_created_at=post_created or "",
-            post_urn=urn,
-            post_id=rec.post_id or "",
+            post_urn=post_urn,
             activities_ids=[rec.activity_id] if rec.activity_id else [],
             enrichment_version=ENRICHMENT_VERSION,
         )
@@ -178,7 +179,7 @@ def _save_from_api_fallback(
         meta_urls = resolve_urls_for_metadata(u)
         rec.urls = meta_urls
         save_metadata(
-            urn,
+            post_id,
             urls=meta_urls,
             mentions=m,
             tags=t,
@@ -189,8 +190,7 @@ def _save_from_api_fallback(
                 int(rec.timestamp) if rec.timestamp is not None else None
             ),
             post_created_at=post_created or "",
-            post_urn=urn,
-            post_id=rec.post_id or "",
+            post_urn=post_urn,
             activities_ids=[rec.activity_id] if rec.activity_id else [],
             enrichment_version=ENRICHMENT_VERSION,
         )
@@ -205,7 +205,8 @@ def _save_from_api_fallback(
 
 def _apply_html_extraction(
     rec: EnrichedRecord,
-    urn: str,
+    post_id: str,
+    post_urn: str,
     url: str,
     html: str,
     final_url: str,
@@ -217,7 +218,8 @@ def _apply_html_extraction(
         if ext.html_meta.get("post_created_at") and not post_created:
             post_created = ext.html_meta["post_created_at"]
         body, meta_urls = save_extraction_to_store(
-            urn=urn,
+            post_id=post_id,
+            post_urn=post_urn,
             post_url=url,
             ext=ext,
             urls_from_api=rec.urls,
@@ -225,7 +227,6 @@ def _apply_html_extraction(
                 int(rec.timestamp) if rec.timestamp is not None else None
             ),
             post_created=post_created or "",
-            post_id=rec.post_id or "",
             activities_ids=[rec.activity_id] if rec.activity_id else [],
         )
         rec.urls = meta_urls
@@ -236,7 +237,8 @@ def _apply_html_extraction(
 
     return _save_from_api_fallback(
         rec,
-        urn,
+        post_id,
+        post_urn,
         url,
         post_created,
         telemetry=telemetry,
@@ -250,10 +252,11 @@ def _run_enrichment(to_enrich: list[EnrichedRecord]):
     tel = EnrichmentTelemetry()
 
     for i, rec in enumerate(to_enrich):
-        urn = rec.post_urn
+        post_id = rec.post_id
+        post_urn = rec.post_urn
         url = rec.post_url
-        logger.info("Enriching %d/%d: %s", i + 1, total, url or urn or "?")
-        if not (urn and url):
+        logger.info("Enriching %d/%d: %s", i + 1, total, url or post_id or "?")
+        if not (post_id and url):
             yield i + 1, total
             continue
 
@@ -266,11 +269,12 @@ def _run_enrichment(to_enrich: list[EnrichedRecord]):
         ts_ms = int(rec.timestamp) if rec.timestamp is not None else None
         post_created = (rec.post_created_at or "").strip() or None
         if not post_created:
-            post_created = post_created_at_from_urn(urn)
+            post_created = post_created_at_from_urn(post_urn)
 
         if mode == "merge":
             out = merge_enrichment_activity(
-                urn,
+                post_id,
+                post_urn=post_urn,
                 activity_id=rec.activity_id or "",
                 post_url=url,
                 activity_time_iso=_ms_to_iso(ts_ms),
@@ -286,11 +290,11 @@ def _run_enrichment(to_enrich: list[EnrichedRecord]):
         if fetched:
             html, final_url = fetched
             if _apply_html_extraction(
-                rec, urn, url, html, final_url, post_created, tel
+                rec, post_id, post_urn, url, html, final_url, post_created, tel
             ):
                 enriched_count += 1
         elif _save_from_api_fallback(
-            rec, urn, url, post_created, telemetry=tel, reason="http_fail"
+            rec, post_id, post_urn, url, post_created, telemetry=tel, reason="http_fail"
         ):
             enriched_count += 1
 
@@ -307,7 +311,8 @@ def _activities_to_enrich(
     rows = [
         a
         for a in activities
-        if a.post_url
+        if a.post_id
+        and a.post_url
         and not is_comment_feed_url(a.post_url)
         and _row_needs_work(a)[0] != "skip"
     ]

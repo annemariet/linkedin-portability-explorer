@@ -429,11 +429,14 @@ class TestProcessPostLinkedContent:
 
 class TestIterPostsWithUrls:
     URN = "urn:li:activity:123"
+    POST_ID = "123"
 
     def test_yields_urls_from_metadata(self):
         """Posts with urls already in .meta.json are yielded directly."""
-        save_content(self.URN, "some text")
-        save_metadata(self.URN, urls=["https://example.com/article"])
+        save_content(self.POST_ID, "some text", post_urn=self.URN)
+        save_metadata(
+            self.POST_ID, urls=["https://example.com/article"], post_urn=self.URN
+        )
 
         results = list(_iter_posts_with_urls())
 
@@ -443,13 +446,14 @@ class TestIterPostsWithUrls:
 
     def test_yields_mention_urls_with_resource_urls(self):
         """``mentions[].url`` are included for fetch alongside ``urls``."""
-        save_content(self.URN, "x")
+        save_content(self.POST_ID, "x", post_urn=self.URN)
         save_metadata(
-            self.URN,
+            self.POST_ID,
             urls=["https://example.com/resource"],
             mentions=[
                 {"name": "Acme", "url": "https://www.linkedin.com/company/acme"},
             ],
+            post_urn=self.URN,
         )
 
         results = list(_iter_posts_with_urls())
@@ -459,8 +463,12 @@ class TestIterPostsWithUrls:
 
     def test_extracts_urls_from_md_when_metadata_urls_empty(self):
         """When urls field is absent, URLs are extracted from the .md content."""
-        save_content(self.URN, "Check out https://github.com/user/repo for details.")
-        save_metadata(self.URN)  # no urls
+        save_content(
+            self.POST_ID,
+            "Check out https://github.com/user/repo for details.",
+            post_urn=self.URN,
+        )
+        save_metadata(self.POST_ID, post_urn=self.URN)  # no urls
 
         results = list(_iter_posts_with_urls())
 
@@ -470,22 +478,27 @@ class TestIterPostsWithUrls:
 
     def test_persists_extracted_urls_to_metadata(self):
         """URLs extracted from .md are written back to .meta.json for future runs."""
-        save_content(self.URN, "See https://arxiv.org/abs/2401.00000 for the paper.")
-        save_metadata(self.URN)
+        save_content(
+            self.POST_ID,
+            "See https://arxiv.org/abs/2401.00000 for the paper.",
+            post_urn=self.URN,
+        )
+        save_metadata(self.POST_ID, post_urn=self.URN)
 
         list(_iter_posts_with_urls())
 
-        meta = load_metadata(self.URN)
+        meta = load_metadata(self.POST_ID, post_urn=self.URN)
         assert meta is not None
         assert "https://arxiv.org/abs/2401.00000" in meta.get("urls", [])
 
     def test_filters_linkedin_urls_from_md_extraction(self):
         """LinkedIn profile/hashtag URLs in .md content are excluded."""
         save_content(
-            self.URN,
+            self.POST_ID,
             "Follow https://www.linkedin.com/in/johndoe and visit https://example.com/good",
+            post_urn=self.URN,
         )
-        save_metadata(self.URN)
+        save_metadata(self.POST_ID, post_urn=self.URN)
 
         results = list(_iter_posts_with_urls())
 
@@ -495,8 +508,10 @@ class TestIterPostsWithUrls:
 
     def test_skips_posts_with_no_urls_anywhere(self):
         """Posts with no urls in metadata and no URLs in .md are not yielded."""
-        save_content(self.URN, "Just some plain text with no links.")
-        save_metadata(self.URN)
+        save_content(
+            self.POST_ID, "Just some plain text with no links.", post_urn=self.URN
+        )
+        save_metadata(self.POST_ID, post_urn=self.URN)
 
         assert list(_iter_posts_with_urls()) == []
 
