@@ -48,8 +48,12 @@ class SummaryTextTests(unittest.TestCase):
         self.assertEqual("", parsed.category)
         self.assertEqual([], parsed.technologies)
         self.assertEqual([], parsed.people)
+        self.assertEqual([], parsed.companies)
 
-    def test_parse_people_captures_unlinked_names(self) -> None:
+    def test_parse_people_and_companies_are_kept_separate(self) -> None:
+        """PEOPLE/COMPANIES are two distinct lines so the LLM doesn't have to
+        classify inline in one mixed list (that produced company names
+        misfiled as people)."""
         raw = (
             "AUTHOR: Jane Doe\n"
             "CATEGORY: opinion\n"
@@ -57,10 +61,12 @@ class SummaryTextTests(unittest.TestCase):
             "- Credits **John Smith** and **Acme Corp** for the launch.\n"
             "TOPICS: product launch\n"
             "TECH: \n"
-            "PEOPLE: John Smith, Acme Corp\n"
+            "PEOPLE: John Smith\n"
+            "COMPANIES: Acme Corp\n"
         )
         parsed = parse_summary_response(raw)
-        self.assertEqual(["John Smith", "Acme Corp"], parsed.people)
+        self.assertEqual(["John Smith"], parsed.people)
+        self.assertEqual(["Acme Corp"], parsed.companies)
 
     def test_post_user_prompt_includes_length_hint(self) -> None:
         from linkedin_api.summary_text import build_post_user_prompt

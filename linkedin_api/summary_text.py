@@ -46,9 +46,13 @@ POST_SYSTEM_PROMPT = (
     "even when the post is in another language>\n"
     "6) Then TECH: <comma-separated tools/frameworks/languages explicitly named in the "
     "post, 0-5 items; leave the line empty if none are named>\n"
-    "7) Last line: PEOPLE: <comma-separated full names of people or companies named or "
-    "credited anywhere in the post text, 0-5 items; leave the line empty if none are "
+    "7) Then PEOPLE: <comma-separated full names of individual humans named or credited "
+    "anywhere in the post text, 0-5 items; never include a company/organization name "
+    "here, even if it looks like a person's name; leave the line empty if none are "
     "named>\n"
+    "8) Last line: COMPANIES: <comma-separated company/organization names named anywhere "
+    "in the post text, 0-5 items; never include an individual person's name here; leave "
+    "the line empty if none are named>\n"
     "Do not invent facts."
 )
 
@@ -72,6 +76,7 @@ _TLDR_LINE_RE = re.compile(r"^TLDR:\s*(.+)$", re.IGNORECASE)
 _TOPICS_LINE_RE = re.compile(r"^TOPICS:\s*(.+)$", re.IGNORECASE)
 _TECH_LINE_RE = re.compile(r"^TECH:\s*(.*)$", re.IGNORECASE)
 _PEOPLE_LINE_RE = re.compile(r"^PEOPLE:\s*(.*)$", re.IGNORECASE)
+_COMPANIES_LINE_RE = re.compile(r"^COMPANIES:\s*(.*)$", re.IGNORECASE)
 _BULLET_RE = re.compile(r"^[-*•]\s+")
 _CATEGORY_NORMALIZE_RE = re.compile(r"[\s-]+")
 
@@ -85,6 +90,7 @@ class ParsedSummary:
     topics: list[str] = field(default_factory=list)
     technologies: list[str] = field(default_factory=list)
     people: list[str] = field(default_factory=list)
+    companies: list[str] = field(default_factory=list)
     summary_text: str = ""
 
     @property
@@ -160,7 +166,8 @@ def _normalize_category(raw: str) -> str:
 
 
 def parse_summary_response(raw_output: str) -> ParsedSummary:
-    """Parse AUTHOR / CATEGORY / TLDR / TOPICS / TECH / PEOPLE preamble and Markdown bullets."""
+    """Parse AUTHOR / CATEGORY / TLDR / TOPICS / TECH / PEOPLE / COMPANIES preamble and
+    Markdown bullets."""
     lines = (raw_output or "").splitlines()
     author = ""
     category = ""
@@ -168,6 +175,7 @@ def parse_summary_response(raw_output: str) -> ParsedSummary:
     topics: list[str] = []
     technologies: list[str] = []
     people: list[str] = []
+    companies: list[str] = []
     bullets: list[str] = []
     idx = 0
     while idx < len(lines):
@@ -213,6 +221,10 @@ def parse_summary_response(raw_output: str) -> ParsedSummary:
         if m_people_line:
             people = _parse_csv_line(m_people_line.group(1))
             continue
+        m_companies_line = _COMPANIES_LINE_RE.match(stripped)
+        if m_companies_line:
+            companies = _parse_csv_line(m_companies_line.group(1))
+            continue
         if _BULLET_RE.match(stripped):
             bullets.append(_BULLET_RE.sub("", stripped, count=1).strip())
         elif bullets:
@@ -231,6 +243,7 @@ def parse_summary_response(raw_output: str) -> ParsedSummary:
         topics=topics,
         technologies=technologies,
         people=people,
+        companies=companies,
         summary_text=summary_text.strip(),
     )
 
