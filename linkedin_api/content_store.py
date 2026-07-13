@@ -190,7 +190,7 @@ _META_KEYS = (
     "category",
     "urls",
     "mentions",
-    "tags",
+    "hashtags",
     "images",
     "post_url",
     "post_urn",
@@ -205,7 +205,7 @@ _META_KEYS = (
     "tldr",
     "summary_bullets",
     "summary_model",
-    "catalog_tags",
+    "tags",
 )
 
 
@@ -229,7 +229,9 @@ def _merge_mentions(
     return list(by_url.values())
 
 
-def _merge_tags(previous: list[Any] | None, incoming: list[Any] | None) -> list[str]:
+def _merge_hashtags(
+    previous: list[Any] | None, incoming: list[Any] | None
+) -> list[str]:
     prev = {str(x).strip() for x in (previous or []) if x and str(x).strip()}
     inc = {str(x).strip() for x in (incoming or []) if x and str(x).strip()}
     return sorted(prev | inc)
@@ -324,7 +326,7 @@ def save_metadata(
         "category": category if category is not None else "",
         "urls": urls or [],
         "mentions": [],
-        "tags": [],
+        "hashtags": [],
         "images": [],
         "post_url": post_url or "",
         "post_urn": "",
@@ -366,14 +368,14 @@ def save_metadata(
     prev_mentions = (
         existing.get("mentions") if isinstance(existing.get("mentions"), list) else None
     )
-    prev_tags = existing.get("tags")
+    prev_hashtags = existing.get("hashtags")
     meta["mentions"] = _merge_mentions(
         prev_mentions,
         meta.get("mentions") if isinstance(meta.get("mentions"), list) else None,
     )
-    meta["tags"] = _merge_tags(
-        prev_tags if isinstance(prev_tags, list) else None,
-        meta.get("tags") if isinstance(meta.get("tags"), list) else None,
+    meta["hashtags"] = _merge_hashtags(
+        prev_hashtags if isinstance(prev_hashtags, list) else None,
+        meta.get("hashtags") if isinstance(meta.get("hashtags"), list) else None,
     )
     prev_images = existing.get("images")
     inc_images = meta.get("images")
@@ -543,15 +545,15 @@ def update_summary_metadata(
     tldr: str = "",
     summary_bullets: list[str] | None = None,
     summary_model: str = "",
-    catalog_tags: list[str] | None = None,
+    tags: list[str] | None = None,
 ) -> Path:
     """Update metadata with LLM summary. Preserves urls, post_url from enrichment.
 
     ``technologies``/``people``/``category`` are left as-is when omitted
-    (``None``), since the current summarize prompt doesn't produce them and
-    every call used to force-write empty values, wiping out anything a
-    future or previous producer had stored there. Pass an explicit value
-    (including ``[]``/``""``) to overwrite.
+    (``None``) rather than force-written to empty, so a producer that
+    doesn't fill one of them (e.g. ``people`` has no current producer)
+    doesn't wipe out anything a prior run stored there. Pass an explicit
+    value (including ``[]``/``""``) to overwrite.
     """
     meta = dict(load_metadata(urn) or {})
     meta["summary"] = summary
@@ -568,8 +570,8 @@ def update_summary_metadata(
     meta["tldr"] = (tldr or "").strip()
     meta["summary_bullets"] = list(summary_bullets or [])
     meta["summary_model"] = (summary_model or "").strip()
-    if catalog_tags is not None:
-        meta["catalog_tags"] = [str(t).strip() for t in catalog_tags if str(t).strip()]
+    if tags is not None:
+        meta["tags"] = [str(t).strip() for t in tags if str(t).strip()]
     meta["summarized_at"] = datetime.now(timezone.utc).isoformat()
     path = _meta_path(urn)
     path.write_text(json.dumps(meta, indent=0), encoding="utf-8")

@@ -122,6 +122,14 @@ def _resolve_summary_llm(*, quiet: bool = True) -> LLMClient | None:
         return None
 
 
+def _looks_non_english(topics: list[str]) -> bool:
+    """Cheap heuristic (no LLM call): any non-ASCII character suggests the
+    extraction prompt's "TOPICS always in English" instruction wasn't
+    followed. Some false positives (English loanwords like "café") are
+    acceptable — they cost one extra translate call, not a wrong tag."""
+    return any(not text.isascii() for text in topics)
+
+
 def topics_to_catalog_tags(
     topics: list[str],
     *,
@@ -129,17 +137,25 @@ def topics_to_catalog_tags(
     limit: int = 5,
     quiet: bool = True,
 ) -> list[str]:
-    """Translate themes to English, then slugify for Obsidian ``tags:`` frontmatter."""
+    """Slugify extracted topics for Obsidian ``tags:`` frontmatter.
+
+    The extraction prompt already asks for English topics, so the common
+    case needs no LLM call here. Only when a topic still looks non-English
+    do we spend a second call translating it — see
+    ``translate_topics_to_english``.
+    """
     cleaned = [str(t).strip() for t in topics if str(t).strip()]
     if not cleaned:
         return []
-    client = llm or _resolve_summary_llm(quiet=quiet)
     english = cleaned
-    if client is not None:
-        try:
-            english = translate_topics_to_english(cleaned, client)
-        except Exception as exc:
-            logger.warning("topic_tag_translate_failed: %s", exc)
+    if _looks_non_english(cleaned):
+        client = llm or _resolve_summary_llm(quiet=quiet)
+        if client is not None:
+            logger.info("topic_tag_looks_non_english topics=%r", cleaned)
+            try:
+                english = translate_topics_to_english(cleaned, client)
+            except Exception as exc:
+                logger.warning("topic_tag_translate_failed: %s", exc)
     return normalize_obsidian_tags(english, limit=limit)
 
 

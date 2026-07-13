@@ -45,10 +45,12 @@ def _summarize_one(post: dict[str, Any], llm, *, model_id: str) -> bool:
             urn,
             summary=parsed.summary_text,
             topics=parsed.topics,
+            technologies=parsed.technologies,
+            category=parsed.category or None,
             tldr=parsed.tldr,
             summary_bullets=parsed.bullets,
             summary_model=model_id,
-            catalog_tags=catalog_tags,
+            tags=catalog_tags,
         )
         return True
     except Exception as exc:

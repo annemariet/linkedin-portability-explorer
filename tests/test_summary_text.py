@@ -24,6 +24,30 @@ class SummaryTextTests(unittest.TestCase):
         parsed = parse_summary_response("")
         self.assertFalse(parsed.ok)
 
+    def test_parse_category_and_tech(self) -> None:
+        raw = (
+            "AUTHOR: Jane Doe\n"
+            "CATEGORY: tutorial\n"
+            "TLDR: How to run stateful workloads on Kubernetes.\n"
+            "- Covers **StatefulSets** and **Persistent Volumes**.\n"
+            "TOPICS: kubernetes, storage\n"
+            "TECH: Kubernetes, PostgreSQL\n"
+        )
+        parsed = parse_summary_response(raw)
+        self.assertEqual("tutorial", parsed.category)
+        self.assertEqual(["Kubernetes", "PostgreSQL"], parsed.technologies)
+
+    def test_parse_unknown_category_normalizes_to_empty(self) -> None:
+        raw = "AUTHOR: Unknown\nCATEGORY: not a real category\nTLDR: A post.\n"
+        parsed = parse_summary_response(raw)
+        self.assertEqual("", parsed.category)
+
+    def test_parse_without_category_or_tech_defaults_empty(self) -> None:
+        raw = "AUTHOR: Unknown\nTLDR: A post.\n- A bullet.\n"
+        parsed = parse_summary_response(raw)
+        self.assertEqual("", parsed.category)
+        self.assertEqual([], parsed.technologies)
+
     def test_post_user_prompt_includes_length_hint(self) -> None:
         from linkedin_api.summary_text import build_post_user_prompt
 
