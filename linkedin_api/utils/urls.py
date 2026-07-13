@@ -156,6 +156,35 @@ def extract_urls_from_text(text: str) -> List[str]:
     return list(set(cleaned_urls))
 
 
+def _repair_mojibake_segment(segment: str) -> str:
+    """Try to repair one line/segment mis-decoded as latin-1 or cp1252."""
+    if "â" not in segment and "Ã" not in segment:
+        return segment
+    for encoding in ("latin-1", "cp1252"):
+        try:
+            repaired = segment.encode(encoding).decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            continue
+        if repaired != segment and "\ufffd" not in repaired:
+            return repaired
+    return segment
+
+
+def fix_mojibake(text: str) -> str:
+    """Repair UTF-8 text that was mis-decoded as latin-1/cp1252 (e.g. smart quotes)."""
+    if not text or ("â" not in text and "Ã" not in text):
+        return text
+    try:
+        repaired = text.encode("latin-1").decode("utf-8")
+        if repaired != text and "\ufffd" not in repaired:
+            return repaired
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+    return "".join(
+        _repair_mojibake_segment(line) for line in text.splitlines(keepends=True)
+    )
+
+
 def categorize_url(url: str) -> Dict[str, Optional[str]]:
     """
     Categorize a URL by domain and type.
@@ -190,6 +219,9 @@ def categorize_url(url: str) -> Dict[str, Optional[str]]:
         for ext, resource_type in file_extensions.items():
             if ext in url_lower:
                 return {"domain": domain, "type": resource_type}
+
+        if re.search(r"/pdf(?:/|$)", path) or path.endswith("/pdf"):
+            return {"domain": domain, "type": "document"}
 
         resource_type = None
 
@@ -239,6 +271,53 @@ def strip_utm_params(url: str) -> str:
         return url
 
 
+_TRACKING_QUERY_KEYS = frozenset(
+    {
+        "fbclid",
+        "gclid",
+        "mc_cid",
+        "mc_eid",
+        "ref",
+        "source",
+    }
+)
+
+
+def canonical_resource_url(url: str) -> str:
+    """Stable resource identity: UTM/tracking params stripped, host lowercased,
+    default port and trailing slash dropped, no fragment.
+
+    Assumes *url* has already had redirects resolved by the caller.
+    """
+    raw = (url or "").strip()
+    if not raw.startswith(("http://", "https://")):
+        return raw
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return raw
+    scheme = (parsed.scheme or "https").lower()
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return raw
+    port = parsed.port
+    if port and (
+        (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    ):
+        port = None
+    netloc = host if port is None else f"{host}:{port}"
+    path = parsed.path or ""
+    if path != "/":
+        path = path.rstrip("/")
+    filtered = [
+        (k, v)
+        for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if not k.lower().startswith("utm_") and k.lower() not in _TRACKING_QUERY_KEYS
+    ]
+    query = urlencode(filtered, doseq=True)
+    return urlunparse((scheme, netloc, path, "", query, ""))
+
+
 def is_linkedin_internal_url(url: str) -> bool:
     """True for linkedin.com / lnkd.in hosts (incl. regional subdomains)."""
     if not (url or "").strip():
@@ -286,8 +365,60 @@ _FILE_EXT_TLDS: frozenset[str] = frozenset(
         "kt",
         "swift",
         "r",
+        "bazel",
+        "xlsx",
     }
 )
+
+# Hostname “TLD” segments that are code tokens, not real DNS TLDs (df.head, Promise.all, …).
+_CODE_LIKE_TLDS: frozenset[str] = frozenset(
+    {
+        "all",
+        "get",
+        "head",
+        "tail",
+        "shape",
+        "dtypes",
+        "info",
+        "corr",
+        "column",
+        "append",
+        "client",
+        "search",
+        "total",
+        "date",
+        "array",
+        "tts",
+        "title",
+        "amelie",
+    }
+)
+
+_LINKEDIN_CHROME_PREFIXES = (
+    "/legal/",
+    "/mypreferences/",
+    "/top-content/",
+)
+
+
+def is_plausible_resource_url(url: str) -> bool:
+    """False for malformed or code-fragment URLs that regex extraction can produce."""
+    raw = (url or "").strip()
+    if not raw.startswith(("http://", "https://")):
+        return False
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host or "." not in host:
+        return False
+    if host in {"json.dumps", "json.loads", "repr", "str"}:
+        return False
+    labels = host.split(".")
+    if len(labels) < 2 or not labels[-1].isalpha() or len(labels[-1]) < 2:
+        return False
+    return True
 
 
 def _host_looks_like_filename(url: str) -> bool:
@@ -300,21 +431,112 @@ def _host_looks_like_filename(url: str) -> bool:
         return False
 
 
+def _host_looks_like_code_fragment(url: str) -> bool:
+    """True for bare ``http://df.head``-style URLs LinkedIn invents from post text."""
+    if _host_looks_like_filename(url):
+        return True
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    if not host or host.startswith("@") or "@" in host:
+        return True
+    if "." not in host:
+        return True
+    tld = host.rsplit(".", 1)[-1]
+    if tld in _CODE_LIKE_TLDS:
+        return True
+    return False
+
+
+def _is_linkedin_chrome_url(url: str) -> bool:
+    """LinkedIn site chrome scraped from public post HTML — not linked articles."""
+    if not is_linkedin_internal_url(url):
+        return False
+    try:
+        parsed = urlparse(url.strip())
+        path = (parsed.path or "/").lower().rstrip("/") or "/"
+    except Exception:
+        return False
+    if path == "/":
+        return True
+    return any(path.startswith(prefix) for prefix in _LINKEDIN_CHROME_PREFIXES)
+
+
+_ARXIV_PAPER_RE = re.compile(
+    r"^https?://(?:www\.)?arxiv\.org/(?:pdf|abs|html)/([^/?#]+)",
+    re.IGNORECASE,
+)
+
+
+def arxiv_paper_id(url: str) -> str | None:
+    """Extract arXiv paper id (with optional version suffix) from a paper URL."""
+    match = _ARXIV_PAPER_RE.match((url or "").strip())
+    if not match:
+        return None
+    return match.group(1).removesuffix(".pdf")
+
+
+def arxiv_html_url(url: str) -> str | None:
+    """Return arXiv HTML article URL when the input is an arXiv paper link."""
+    paper_id = arxiv_paper_id(url)
+    if not paper_id:
+        return None
+    return f"https://arxiv.org/html/{paper_id}"
+
+
+def arxiv_abs_url(url: str) -> str | None:
+    """Return arXiv abstract page URL for a paper link, if applicable."""
+    paper_id = arxiv_paper_id(url)
+    if not paper_id:
+        return None
+    return f"https://arxiv.org/abs/{paper_id}"
+
+
+def rewrite_fetch_url(url: str) -> str:
+    """Rewrite known non-HTML URLs to an HTML page when possible."""
+    rewritten = arxiv_html_url(url) or arxiv_abs_url(url)
+    return rewritten or url
+
+
+_X_STATUS_RE = re.compile(
+    r"^https?://(?:(?:www\.)?(?:x|twitter)\.com)(?:/[^/]+)?/status/(\d+)",
+    re.IGNORECASE,
+)
+
+
+def x_status_id(url: str) -> str | None:
+    """Return numeric status id from an X/Twitter status URL."""
+    match = _X_STATUS_RE.match((url or "").strip())
+    return match.group(1) if match else None
+
+
+def is_x_status_url(url: str) -> bool:
+    return x_status_id(url) is not None
+
+
 def should_ignore_url(url: str) -> bool:
     """Check if URL should be ignored (hashtags, profile links, auth pages, etc.)."""
-    if "linkedin.com/in/" in url or "linkedin.com/pub/" in url:
+    raw = (url or "").strip()
+    if raw.lower().startswith("mailto:"):
         return True
-    if "linkedin.com/feed/hashtag/" in url:
+    if not is_plausible_resource_url(raw):
         return True
-    if "linkedin.com/company/" in url:
+    if _host_looks_like_code_fragment(raw):
         return True
-    if url.startswith("https://www.linkedin.com/feed/"):
+    if _is_linkedin_chrome_url(raw):
         return True
-    if "linkedin.com/signup/" in url or "linkedin.com/authwall" in url:
+    if "linkedin.com/in/" in raw or "linkedin.com/pub/" in raw:
         return True
-    if "linkedin.com/showcase/" in url or "linkedin.com/school/" in url:
+    if "linkedin.com/feed/hashtag/" in raw:
         return True
-    if _host_looks_like_filename(url):
+    if "linkedin.com/company/" in raw:
+        return True
+    if raw.startswith("https://www.linkedin.com/feed/"):
+        return True
+    if "linkedin.com/signup/" in raw or "linkedin.com/authwall" in raw:
+        return True
+    if "linkedin.com/showcase/" in raw or "linkedin.com/school/" in raw:
         return True
     return False
 
