@@ -536,22 +536,35 @@ def update_summary_metadata(
     urn: str,
     summary: str,
     topics: list[str],
-    technologies: list[str],
-    people: list[str],
-    category: str | None,
+    technologies: list[str] | None = None,
+    people: list[str] | None = None,
+    category: str | None = None,
     *,
     tldr: str = "",
     summary_bullets: list[str] | None = None,
     summary_model: str = "",
     catalog_tags: list[str] | None = None,
 ) -> Path:
-    """Update metadata with LLM summary. Preserves urls, post_url from enrichment."""
+    """Update metadata with LLM summary. Preserves urls, post_url from enrichment.
+
+    ``technologies``/``people``/``category`` are left as-is when omitted
+    (``None``), since the current summarize prompt doesn't produce them and
+    every call used to force-write empty values, wiping out anything a
+    future or previous producer had stored there. Pass an explicit value
+    (including ``[]``/``""``) to overwrite.
+    """
     meta = dict(load_metadata(urn) or {})
     meta["summary"] = summary
     meta["topics"] = topics
-    meta["technologies"] = technologies
-    meta["people"] = people
-    meta["category"] = category or ""
+    if technologies is not None:
+        meta["technologies"] = technologies
+    if people is not None:
+        meta["people"] = people
+    if category is not None:
+        meta["category"] = category
+    meta.setdefault("technologies", [])
+    meta.setdefault("people", [])
+    meta.setdefault("category", "")
     meta["tldr"] = (tldr or "").strip()
     meta["summary_bullets"] = list(summary_bullets or [])
     meta["summary_model"] = (summary_model or "").strip()
