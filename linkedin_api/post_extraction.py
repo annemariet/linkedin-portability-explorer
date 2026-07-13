@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
@@ -37,8 +37,8 @@ from linkedin_api.utils.post_html import (
 from linkedin_api.utils.urls import (
     extract_classified_links,
     extract_urls_from_text,
-    is_linkedin_internal_url,
     linkedin_hashtag_keyword,
+    linkedin_mention_type,
     linkedin_redir_unwrap_url,
     linkedin_signup_redirect_hashtag,
     should_ignore_url,
@@ -128,22 +128,14 @@ def classify_links_from_soup(
         if hk:
             tags_set.add(hk)
             continue
-        if is_linkedin_internal_url(href):
-            try:
-                path = urlparse(href).path.lower()
-            except Exception:
-                path = ""
-            if (
-                path.startswith("/in/")
-                or path.startswith("/company/")
-                or path.startswith("/school/")
-            ):
-                name = a.get_text(strip=True)
-                if href not in mentions_map:
-                    mentions_map[href] = {"name": name, "url": href}
-                elif name and not (mentions_map[href].get("name") or "").strip():
-                    mentions_map[href]["name"] = name
-                continue
+        mtype = linkedin_mention_type(href)
+        if mtype:
+            name = a.get_text(strip=True)
+            if href not in mentions_map:
+                mentions_map[href] = {"name": name, "url": href, "type": mtype}
+            elif name and not (mentions_map[href].get("name") or "").strip():
+                mentions_map[href]["name"] = name
+            continue
         href = linkedin_redir_unwrap_url(href) or href
         if should_ignore_url(href):
             continue
@@ -159,19 +151,11 @@ def classify_links_from_soup(
         if hk:
             tags_set.add(hk)
             continue
-        if is_linkedin_internal_url(u):
-            try:
-                path = urlparse(u).path.lower()
-            except Exception:
-                path = ""
-            if (
-                path.startswith("/in/")
-                or path.startswith("/company/")
-                or path.startswith("/school/")
-            ):
-                if u not in mentions_map:
-                    mentions_map[u] = {"name": "", "url": u}
-                continue
+        mtype = linkedin_mention_type(u)
+        if mtype:
+            if u not in mentions_map:
+                mentions_map[u] = {"name": "", "url": u, "type": mtype}
+            continue
         u = linkedin_redir_unwrap_url(u) or u
         if should_ignore_url(u):
             continue
@@ -285,9 +269,15 @@ def merge_classification_with_api(
         u = m.get("url") or ""
         if u and u not in by_url:
             by_url[u] = dict(m)
-        elif u and u in by_url and (m.get("name") or "").strip():
-            if not (by_url[u].get("name") or "").strip():
+        elif u and u in by_url:
+            if (m.get("name") or "").strip() and not (
+                by_url[u].get("name") or ""
+            ).strip():
                 by_url[u]["name"] = m["name"]
+            if (m.get("type") or "").strip() and not (
+                by_url[u].get("type") or ""
+            ).strip():
+                by_url[u]["type"] = m["type"]
     hashtag_set = set(dom_hashtags) | set(ex_t)
     return out_urls, list(by_url.values()), sorted(hashtag_set)
 

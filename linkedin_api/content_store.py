@@ -187,7 +187,6 @@ _META_KEYS = (
     "topics",
     "technologies",
     "people",
-    "companies",
     "category",
     "urls",
     "mentions",
@@ -213,7 +212,13 @@ _META_KEYS = (
 def _merge_mentions(
     previous: list[dict[str, Any]] | None, incoming: list[dict[str, Any]] | None
 ) -> list[dict[str, str]]:
-    """Union by ``url``; prefer non-empty ``name`` when merging."""
+    """Union by ``url``; prefer non-empty ``name``/``type`` when merging.
+
+    ``type`` is ``"person"``/``"company"``/``"school"`` from the URL path
+    (``/in/``, ``/company/``, ``/school/``) — ground truth from LinkedIn's
+    own URL scheme, not an LLM guess. Missing on entries saved before this
+    field existed; backfilled on the next enrich run for that URN.
+    """
     by_url: dict[str, dict[str, str]] = {}
     for group in (previous or [], incoming or []):
         for raw in group:
@@ -223,10 +228,14 @@ def _merge_mentions(
             if not url:
                 continue
             name = str(raw.get("name") or "").strip()
+            mtype = str(raw.get("type") or "").strip()
             if url not in by_url:
-                by_url[url] = {"name": name, "url": url}
-            elif name and not (by_url[url].get("name") or "").strip():
-                by_url[url]["name"] = name
+                by_url[url] = {"name": name, "url": url, "type": mtype}
+            else:
+                if name and not (by_url[url].get("name") or "").strip():
+                    by_url[url]["name"] = name
+                if mtype and not (by_url[url].get("type") or "").strip():
+                    by_url[url]["type"] = mtype
     return list(by_url.values())
 
 
@@ -541,7 +550,6 @@ def update_summary_metadata(
     topics: list[str],
     technologies: list[str] | None = None,
     people: list[str] | None = None,
-    companies: list[str] | None = None,
     category: str | None = None,
     *,
     tldr: str = "",
@@ -551,16 +559,16 @@ def update_summary_metadata(
 ) -> Path:
     """Update metadata with LLM summary. Preserves urls, post_url from enrichment.
 
-    ``technologies``/``people``/``companies``/``category`` are left as-is
-    when omitted (``None``) rather than force-written to empty, so a caller
-    that doesn't fill one of them doesn't wipe out anything a prior run
-    stored there. Pass an explicit value (including ``[]``/``""``) to
-    overwrite. Note: ``people``/``companies`` (LLM-extracted, including
-    ones with no DOM link) are intentionally separate from ``mentions``
-    (DOM-scraped profile links) — complementary, not duplicates. ``people``
-    and ``companies`` are also kept as two distinct fields rather than one,
-    since asking the LLM for a single mixed list produced organization
-    names misclassified as people.
+    ``technologies``/``people``/``category`` are left as-is when omitted
+    (``None``) rather than force-written to empty, so a caller that doesn't
+    fill one of them doesn't wipe out anything a prior run stored there.
+    Pass an explicit value (including ``[]``/``""``) to overwrite. Note:
+    ``people`` (LLM-extracted individual names, including ones with no DOM
+    link) is intentionally separate from ``mentions`` (DOM-scraped profile
+    links, which also carry a ``type`` of person/company/school from the
+    URL path) — complementary, not duplicates. Company names are not
+    LLM-extracted here; ``mentions``' URL-derived ``type`` is the reliable
+    signal for those, not an LLM guess from post text.
     """
     meta = dict(load_metadata(urn) or {})
     meta["summary"] = summary
@@ -569,9 +577,6 @@ def update_summary_metadata(
         technologies if technologies is not None else meta.get("technologies", [])
     )
     meta["people"] = people if people is not None else meta.get("people", [])
-    meta["companies"] = (
-        companies if companies is not None else meta.get("companies", [])
-    )
     meta["category"] = category if category is not None else meta.get("category", "")
     meta["tldr"] = (tldr or "").strip()
     meta["summary_bullets"] = list(summary_bullets or [])
@@ -664,7 +669,6 @@ def list_summarized_metadata(limit: int | None = None) -> list[dict[str, Any]]:
                     "topics": meta.get("topics") or [],
                     "technologies": meta.get("technologies") or [],
                     "people": meta.get("people") or [],
-                    "companies": meta.get("companies") or [],
                     "category": meta.get("category") or "",
                     "summarized_at": meta.get("summarized_at") or "",
                     "post_url": meta.get("post_url") or "",

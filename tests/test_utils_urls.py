@@ -8,6 +8,8 @@ from linkedin_api.utils.urls import (
     extract_classified_links,
     extract_urls_from_text,
     is_linkedin_internal_url,
+    is_linkedin_mention_url,
+    linkedin_mention_type,
     resolve_redirect,
     should_ignore_url,
 )
@@ -98,6 +100,26 @@ class TestLinkedinRedirUnwrapUrl:
         )
 
 
+class TestLinkedinMentionType:
+    def test_person(self):
+        assert linkedin_mention_type("https://www.linkedin.com/in/jane") == "person"
+
+    def test_company(self):
+        assert (
+            linkedin_mention_type("https://www.linkedin.com/company/acme") == "company"
+        )
+
+    def test_school(self):
+        assert linkedin_mention_type("https://www.linkedin.com/school/mit") == "school"
+
+    def test_non_mention_url_returns_empty(self):
+        assert linkedin_mention_type("https://github.com/x/y") == ""
+
+    def test_is_linkedin_mention_url_matches_type(self):
+        assert is_linkedin_mention_url("https://www.linkedin.com/company/acme") is True
+        assert is_linkedin_mention_url("https://github.com/x/y") is False
+
+
 class TestExtractClassifiedLinks:
     def test_splits_mentions_tags_and_resource_urls(self):
         urls_in = [
@@ -109,7 +131,14 @@ class TestExtractClassifiedLinks:
         assert tags == ["ai"]
         assert len(mentions) == 1
         assert mentions[0]["url"] == "https://www.linkedin.com/in/jane"
+        assert mentions[0]["type"] == "person"
         assert "https://github.com/x/y" in urls
+
+    def test_company_url_typed_as_company(self):
+        urls, mentions, _ = extract_classified_links(
+            ["https://www.linkedin.com/company/acme"]
+        )
+        assert mentions[0]["type"] == "company"
 
     def test_signup_redirect_hashtag_goes_to_tags_not_urls(self):
         signup_url = (
