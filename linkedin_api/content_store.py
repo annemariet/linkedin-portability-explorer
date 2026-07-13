@@ -560,15 +560,11 @@ def update_summary_metadata(
     meta = dict(load_metadata(urn) or {})
     meta["summary"] = summary
     meta["topics"] = topics
-    if technologies is not None:
-        meta["technologies"] = technologies
-    if people is not None:
-        meta["people"] = people
-    if category is not None:
-        meta["category"] = category
-    meta.setdefault("technologies", [])
-    meta.setdefault("people", [])
-    meta.setdefault("category", "")
+    meta["technologies"] = (
+        technologies if technologies is not None else meta.get("technologies", [])
+    )
+    meta["people"] = people if people is not None else meta.get("people", [])
+    meta["category"] = category if category is not None else meta.get("category", "")
     meta["tldr"] = (tldr or "").strip()
     meta["summary_bullets"] = list(summary_bullets or [])
     meta["summary_model"] = (summary_model or "").strip()

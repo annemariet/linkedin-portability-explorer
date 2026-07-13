@@ -73,6 +73,7 @@ _TOPICS_LINE_RE = re.compile(r"^TOPICS:\s*(.+)$", re.IGNORECASE)
 _TECH_LINE_RE = re.compile(r"^TECH:\s*(.*)$", re.IGNORECASE)
 _PEOPLE_LINE_RE = re.compile(r"^PEOPLE:\s*(.*)$", re.IGNORECASE)
 _BULLET_RE = re.compile(r"^[-*•]\s+")
+_CATEGORY_NORMALIZE_RE = re.compile(r"[\s-]+")
 
 
 @dataclass(frozen=True)
@@ -154,7 +155,7 @@ def _parse_csv_line(line: str) -> list[str]:
 
 
 def _normalize_category(raw: str) -> str:
-    text = re.sub(r"[\s-]+", "_", (raw or "").strip().lower())
+    text = _CATEGORY_NORMALIZE_RE.sub("_", (raw or "").strip().lower())
     return text if text in _CATEGORY_CHOICES else ""
 
 

@@ -69,7 +69,7 @@ class TopicTagsTests(unittest.TestCase):
     def test_catalog_tags_for_topics_prefers_stored(self) -> None:
         tags = catalog_tags_for_topics(
             ["ignored"],
-            catalog_tags=["artificial-intelligence", "leadership"],
+            tags=["artificial-intelligence", "leadership"],
             llm=None,
         )
         self.assertEqual(tags, ["artificial-intelligence", "leadership"])

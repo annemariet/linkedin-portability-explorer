@@ -162,13 +162,14 @@ def topics_to_catalog_tags(
 def catalog_tags_for_topics(
     topics: list[str],
     *,
-    catalog_tags: list[str] | None = None,
+    tags: list[str] | None = None,
     llm: LLMClient | None = None,
     limit: int = 5,
     quiet: bool = True,
 ) -> list[str]:
-    """Prefer precomputed ``catalog_tags``; otherwise translate *topics* to English slugs."""
-    stored = [str(t).strip() for t in (catalog_tags or []) if str(t).strip()]
+    """Prefer precomputed ``tags`` (meta.json's stored English slugs); otherwise
+    translate *topics* to English slugs."""
+    stored = [str(t).strip() for t in (tags or []) if str(t).strip()]
     if stored:
         normalized = normalize_obsidian_tags(stored, limit=limit)
         if normalized:
