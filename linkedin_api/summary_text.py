@@ -44,8 +44,11 @@ POST_SYSTEM_PROMPT = (
     "   Each bullet is one or two sentences in Markdown. Use **bold** for critical terms where helpful.\n"
     "5) Then TOPICS: <comma-separated themes, 1-5 items; always in English, "
     "even when the post is in another language>\n"
-    "6) Last line: TECH: <comma-separated tools/frameworks/languages explicitly named in the "
+    "6) Then TECH: <comma-separated tools/frameworks/languages explicitly named in the "
     "post, 0-5 items; leave the line empty if none are named>\n"
+    "7) Last line: PEOPLE: <comma-separated full names of people or companies named or "
+    "credited anywhere in the post text, 0-5 items; leave the line empty if none are "
+    "named>\n"
     "Do not invent facts."
 )
 
@@ -68,6 +71,7 @@ _CATEGORY_LINE_RE = re.compile(r"^CATEGORY:\s*(.+)$", re.IGNORECASE)
 _TLDR_LINE_RE = re.compile(r"^TLDR:\s*(.+)$", re.IGNORECASE)
 _TOPICS_LINE_RE = re.compile(r"^TOPICS:\s*(.+)$", re.IGNORECASE)
 _TECH_LINE_RE = re.compile(r"^TECH:\s*(.*)$", re.IGNORECASE)
+_PEOPLE_LINE_RE = re.compile(r"^PEOPLE:\s*(.*)$", re.IGNORECASE)
 _BULLET_RE = re.compile(r"^[-*•]\s+")
 
 
@@ -79,6 +83,7 @@ class ParsedSummary:
     bullets: list[str] = field(default_factory=list)
     topics: list[str] = field(default_factory=list)
     technologies: list[str] = field(default_factory=list)
+    people: list[str] = field(default_factory=list)
     summary_text: str = ""
 
     @property
@@ -154,13 +159,14 @@ def _normalize_category(raw: str) -> str:
 
 
 def parse_summary_response(raw_output: str) -> ParsedSummary:
-    """Parse AUTHOR / CATEGORY / TLDR / TOPICS / TECH preamble and Markdown bullets."""
+    """Parse AUTHOR / CATEGORY / TLDR / TOPICS / TECH / PEOPLE preamble and Markdown bullets."""
     lines = (raw_output or "").splitlines()
     author = ""
     category = ""
     tldr = ""
     topics: list[str] = []
     technologies: list[str] = []
+    people: list[str] = []
     bullets: list[str] = []
     idx = 0
     while idx < len(lines):
@@ -202,6 +208,10 @@ def parse_summary_response(raw_output: str) -> ParsedSummary:
         if m_tech_line:
             technologies = _parse_csv_line(m_tech_line.group(1))
             continue
+        m_people_line = _PEOPLE_LINE_RE.match(stripped)
+        if m_people_line:
+            people = _parse_csv_line(m_people_line.group(1))
+            continue
         if _BULLET_RE.match(stripped):
             bullets.append(_BULLET_RE.sub("", stripped, count=1).strip())
         elif bullets:
@@ -219,6 +229,7 @@ def parse_summary_response(raw_output: str) -> ParsedSummary:
         bullets=bullets,
         topics=topics,
         technologies=technologies,
+        people=people,
         summary_text=summary_text.strip(),
     )
 

@@ -550,10 +550,12 @@ def update_summary_metadata(
     """Update metadata with LLM summary. Preserves urls, post_url from enrichment.
 
     ``technologies``/``people``/``category`` are left as-is when omitted
-    (``None``) rather than force-written to empty, so a producer that
-    doesn't fill one of them (e.g. ``people`` has no current producer)
-    doesn't wipe out anything a prior run stored there. Pass an explicit
-    value (including ``[]``/``""``) to overwrite.
+    (``None``) rather than force-written to empty, so a caller that doesn't
+    fill one of them doesn't wipe out anything a prior run stored there.
+    Pass an explicit value (including ``[]``/``""``) to overwrite. Note:
+    ``people`` (LLM-extracted names/companies, including ones with no DOM
+    link) is intentionally separate from ``mentions`` (DOM-scraped profile
+    links) — the two are complementary, not duplicates.
     """
     meta = dict(load_metadata(urn) or {})
     meta["summary"] = summary

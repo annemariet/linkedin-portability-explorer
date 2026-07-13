@@ -46,6 +46,7 @@ def _summarize_one(post: dict[str, Any], llm, *, model_id: str) -> bool:
             summary=parsed.summary_text,
             topics=parsed.topics,
             technologies=parsed.technologies,
+            people=parsed.people,
             category=parsed.category or None,
             tldr=parsed.tldr,
             summary_bullets=parsed.bullets,
