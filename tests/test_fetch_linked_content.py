@@ -629,75 +629,109 @@ class TestProcessPostLinkedContent:
 
 class TestIterPostsWithUrls:
     URN = "urn:li:activity:123"
+    POST_ID = "123"
 
     def test_yields_urls_from_metadata(self):
         """Posts with urls already in .meta.json are yielded directly."""
-        save_content(self.URN, "some text")
-        save_metadata(self.URN, urls=["https://example.com/article"])
+        save_content(self.POST_ID, "some text", post_urn=self.URN)
+        save_metadata(
+            self.POST_ID, urls=["https://example.com/article"], post_urn=self.URN
+        )
 
         results = list(_iter_posts_with_urls())
 
         assert len(results) == 1
-        _, urls = results[0]
+        citing_stem, urls = results[0]
+        assert citing_stem == self.POST_ID
         assert urls == ["https://example.com/article"]
 
     def test_yields_mention_urls_with_resource_urls(self):
         """LinkedIn mention URLs are filtered; only external resources are fetched."""
-        save_content(self.URN, "x")
+        save_content(self.POST_ID, "x", post_urn=self.URN)
         save_metadata(
-            self.URN,
+            self.POST_ID,
             urls=["https://example.com/resource"],
             mentions=[
                 {"name": "Acme", "url": "https://www.linkedin.com/company/acme"},
             ],
+            post_urn=self.URN,
         )
 
         results = list(_iter_posts_with_urls())
-        _, urls = results[0]
+        citing_stem, urls = results[0]
+        assert citing_stem == self.POST_ID
         assert urls == ["https://example.com/resource"]
 
     def test_extracts_urls_from_md_when_metadata_urls_empty(self):
         """When urls field is absent, URLs are extracted from the .md content."""
-        save_content(self.URN, "Check out https://github.com/user/repo for details.")
-        save_metadata(self.URN)  # no urls
+        save_content(
+            self.POST_ID,
+            "Check out https://github.com/user/repo for details.",
+            post_urn=self.URN,
+        )
+        save_metadata(self.POST_ID, post_urn=self.URN)  # no urls
 
         results = list(_iter_posts_with_urls())
 
         assert len(results) == 1
-        _, urls = results[0]
+        citing_stem, urls = results[0]
+        assert citing_stem == self.POST_ID
         assert "https://github.com/user/repo" in urls
 
     def test_persists_extracted_urls_to_metadata(self):
         """URLs extracted from .md are written back to .meta.json for future runs."""
-        save_content(self.URN, "See https://arxiv.org/abs/2401.00000 for the paper.")
-        save_metadata(self.URN)
+        save_content(
+            self.POST_ID,
+            "See https://arxiv.org/abs/2401.00000 for the paper.",
+            post_urn=self.URN,
+        )
+        save_metadata(self.POST_ID, post_urn=self.URN)
 
         list(_iter_posts_with_urls())
 
-        meta = load_metadata(self.URN)
+        meta = load_metadata(self.POST_ID, post_urn=self.URN)
         assert meta is not None
         assert "https://arxiv.org/abs/2401.00000" in meta.get("urls", [])
 
     def test_filters_linkedin_urls_from_md_extraction(self):
         """LinkedIn profile/hashtag URLs in .md content are excluded."""
         save_content(
-            self.URN,
+            self.POST_ID,
             "Follow https://www.linkedin.com/in/johndoe and visit https://example.com/good",
+            post_urn=self.URN,
         )
-        save_metadata(self.URN)
+        save_metadata(self.POST_ID, post_urn=self.URN)
 
         results = list(_iter_posts_with_urls())
 
-        _, urls = results[0]
+        citing_stem, urls = results[0]
+        assert citing_stem == self.POST_ID
         assert all("linkedin.com/in/" not in u for u in urls)
         assert "https://example.com/good" in urls
 
     def test_skips_posts_with_no_urls_anywhere(self):
         """Posts with no urls in metadata and no URLs in .md are not yielded."""
-        save_content(self.URN, "Just some plain text with no links.")
-        save_metadata(self.URN)
+        save_content(
+            self.POST_ID,
+            "plain text with no links",
+            post_urn=self.URN,
+        )
+        save_metadata(self.POST_ID, post_urn=self.URN)
 
         assert list(_iter_posts_with_urls()) == []
+
+    def test_citing_stem_uses_post_id_when_post_urn_unparseable(self):
+        """Nested comment URNs in meta must not force hash cited_by stems."""
+        bad_urn = "urn:li:comment:(urn:li:ugcPost:123,456)"
+        save_content(self.POST_ID, "see https://example.com/x", post_urn=bad_urn)
+        save_metadata(
+            self.POST_ID,
+            urls=["https://example.com/x"],
+            post_urn=bad_urn,
+        )
+        citing_stem, urls = list(_iter_posts_with_urls())[0]
+        assert citing_stem == self.POST_ID
+        assert urls == ["https://example.com/x"]
 
 
 # ---------------------------------------------------------------------------
@@ -1272,14 +1306,13 @@ class TestFetchLinkedContentViaTavily:
 class TestCitedByUrnNormalization:
     def test_save_resource_normalizes_legacy_urn_in_cited_by(self, tmp_path):
         """Raw URN entries written before the hash-conversion fix are normalized."""
-        import hashlib
         import json
 
         from linkedin_api.fetch_linked_content import _resource_dir, _url_stem
 
         url = "https://example.com/legacy-urn"
         urn = "urn:li:activity:9999999999999"
-        expected_hash = hashlib.sha256(urn.encode()).hexdigest()
+        expected_stem = "9999999999999"
 
         # Simulate a file written with a raw URN in cited_by
         stem = _url_stem(url)
@@ -1297,7 +1330,6 @@ class TestCitedByUrnNormalization:
         }
         (rdir / f"{stem}.json").write_text(json.dumps(legacy_data), encoding="utf-8")
 
-        # Re-save: the URN should be converted to a hash
         result = FetchResult(
             url=url, resolved_url=url, title="T", content="C", url_type="article"
         )
@@ -1305,11 +1337,10 @@ class TestCitedByUrnNormalization:
 
         saved = json.loads((rdir / f"{stem}.json").read_text(encoding="utf-8"))
         assert urn not in saved["cited_by"]
-        assert expected_hash in saved["cited_by"]
+        assert expected_stem in saved["cited_by"]
 
     def test_update_resource_cited_by_normalizes_legacy_urn(self, tmp_path):
-        """_update_resource_cited_by also converts existing URN entries to hashes."""
-        import hashlib
+        """_update_resource_cited_by also converts existing URN entries to post_id stems."""
         import json
 
         from linkedin_api.fetch_linked_content import (
@@ -1321,8 +1352,8 @@ class TestCitedByUrnNormalization:
         url = "https://example.com/legacy-urn-update"
         old_urn = "urn:li:activity:1111111111111"
         new_urn = "urn:li:activity:2222222222222"
-        old_hash = hashlib.sha256(old_urn.encode()).hexdigest()
-        new_hash = hashlib.sha256(new_urn.encode()).hexdigest()
+        old_stem = "1111111111111"
+        new_stem = "2222222222222"
 
         stem = _url_stem(url)
         rdir = _resource_dir()
@@ -1334,5 +1365,5 @@ class TestCitedByUrnNormalization:
 
         saved = json.loads((rdir / f"{stem}.json").read_text(encoding="utf-8"))
         assert old_urn not in saved["cited_by"]
-        assert old_hash in saved["cited_by"]
-        assert new_hash in saved["cited_by"]
+        assert old_stem in saved["cited_by"]
+        assert new_stem in saved["cited_by"]
