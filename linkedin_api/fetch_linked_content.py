@@ -3,9 +3,14 @@ Fetch content from URLs linked in LinkedIn posts/comments.
 
 Pluggable extractor with strategy dispatch by URL type.
 
-MVP: simple HTML→text via BeautifulSoup body.
-Later: trafilatura for articles (Substack, Medium, blogs);
-       metadata-only for YouTube/GitHub.
+Body-fetch backend selectable via ``LINKEDIN_EXTRACTOR``:
+  - ``httpx``  (default) — requests + BeautifulSoup body extraction.
+  - ``tavily`` — Tavily Extract API; handles JS-rendered / Cloudflare-gated
+    pages the httpx backend can't. Falls back to httpx if ``TAVILY_API_KEY``
+    isn't configured. See ``TAVILY_EXTRACT_DEPTH`` (basic|advanced).
+Metadata-only for YouTube/GitHub/podcasts regardless of backend. arXiv and
+X/Twitter status URLs are special-cased regardless of backend (see
+``_fetch_arxiv`` / ``_fetch_x_status``).
 
 Storage
 -------
@@ -14,6 +19,15 @@ Fetched resource content is persisted in the *resource store*:
 Each URL is identified by the SHA-256 hash of its (resolved) URL.
   - ``{hash}.json``  — FetchResult (including title and body text)
   - ``{hash}.md``    — body text as plain text / future Markdown
+
+Note: ``FetchResult.images`` (when Tavily's API provides it) is stored as
+remote URLs only — not downloaded or embedded. Tavily's own markdown
+``![]()`` refs for LinkedIn pages are unreliable (comment avatars mixed in
+with the post's real image, and the real image's URL is often a broken
+lazy-load placeholder rather than the actual CDN link), so there's no
+markdown-scraping fallback either. Getting the real post image reliably
+needs the DOM/JSON-LD approach in ``post_extraction.py``, which requires a
+raw HTML fetch Tavily doesn't give us — not implemented here yet.
 
 Typical pipeline
 ----------------
@@ -29,6 +43,12 @@ CLI
   uv run linkedin-fetch-content --dry-run
   uv run linkedin-fetch-content --verbose   # per-URL log lines (no progress bar)
   uv run linkedin-fetch-content --no-progress
+
+  LINKEDIN_EXTRACTOR=tavily uv run linkedin-fetch-content
+
+Compare backends on specific URLs before switching the default (see
+``compare_extractors.py``):
+  uv run python -m linkedin_api.compare_extractors "https://…" "https://…"
 """
 
 from __future__ import annotations
@@ -57,6 +77,7 @@ from linkedin_api.content_store import (
     update_urls_metadata,
 )
 from linkedin_api.html_text import extract_html_body_text, x_article_blocks_to_text
+from linkedin_api.utils.auth import get_secret
 from linkedin_api.utils.urls import (
     arxiv_paper_id,
     canonical_resource_url,
@@ -105,6 +126,7 @@ class FetchResult:
     resolved_url: str = ""
     title: str = ""
     content: str = ""
+    images: list[str] = field(default_factory=list)
     url_type: str = ""
     domain: str = ""
     error: str = ""
@@ -143,7 +165,7 @@ def is_exportable_resource(result: FetchResult) -> bool:
 # Strategy type alias
 # ---------------------------------------------------------------------------
 
-FetchStrategy = Callable[[str], tuple[str, str]]  # returns (title, content)
+FetchStrategy = Callable[[str], tuple[str, str, list[str]]]  # (title, content, images)
 
 # ---------------------------------------------------------------------------
 # Concrete strategies
@@ -216,11 +238,16 @@ def _fetch_soup(
     return soup, title
 
 
-def _fetch_html_body(url: str) -> tuple[str, str]:
-    """Extract title and body text, preserving inline code as Markdown backticks."""
+def _fetch_html_body(url: str) -> tuple[str, str, list[str]]:
+    """Extract title and body text, preserving inline code as Markdown backticks.
+
+    No image extraction here — see ``post_extraction.py`` for the DOM-scoped
+    (post-body-subtree) approach used for the user's own posts; porting that
+    to arbitrary linked URLs is future work.
+    """
     soup, title = _fetch_soup(url)
     content = extract_html_body_text(soup)
-    return title, content
+    return title, content, []
 
 
 _FXTWITTER_STATUS_API = "https://api.fxtwitter.com/status/{tweet_id}"
@@ -287,7 +314,7 @@ def _fetch_x_status_api(tweet_id: str) -> dict | None:
     return None
 
 
-def _fetch_x_status(url: str) -> tuple[str, str]:
+def _fetch_x_status(url: str) -> tuple[str, str, list[str]]:
     """Fetch X/Twitter status text via fxTwitter (fallback vxTwitter)."""
     tweet_id = x_status_id(url)
     if not tweet_id:
@@ -299,58 +326,228 @@ def _fetch_x_status(url: str) -> tuple[str, str]:
     content = _x_status_content(tweet)
     if not content.strip():
         return _fetch_html_body(url)
-    return title, content
+    return title, content, []
 
 
-def _fetch_metadata_only(url: str) -> tuple[str, str]:
+def _fetch_metadata_only(url: str) -> tuple[str, str, list[str]]:
     """Title-only fetch (og:title / <title>); body extraction deferred.
 
     Used for video platforms (YouTube), code repositories (GitHub), etc.
     """
     _, title = _fetch_soup(url, timeout=(5, 10))
-    return title, ""
+    return title, "", []
 
 
 _MIN_ARXIV_HTML_CHARS = 300
 
 
-def _fetch_arxiv(url: str) -> tuple[str, str]:
+def _fetch_arxiv(url: str) -> tuple[str, str, list[str]]:
     """Fetch arXiv paper text from HTML; fall back to abstract page."""
     paper_id = arxiv_paper_id(url)
     if not paper_id:
         return _fetch_html_body(url)
     html_url = f"https://arxiv.org/html/{paper_id}"
     try:
-        title, content = _fetch_html_body(html_url)
+        title, content, _images = _fetch_html_body(html_url)
         if len(content.strip()) >= _MIN_ARXIV_HTML_CHARS:
-            return title, content
+            return title, content, []
     except Exception:
         pass
     return _fetch_html_body(f"https://arxiv.org/abs/{paper_id}")
+
+
+#: Shared cross-project keychain used by amai-lab's lucys-foundry
+#: ``manage_keys.py set tavily`` (service "lucys-foundry", legacy
+#: "agent-fleet-rts", account "tavily"). Unifying this with this repo's own
+#: TAVILY_API_KEY/LINKEDIN_ACCOUNT convention is tracked as amai-lab ADR 0001
+#: §4 / LUC-96 — not resolved yet, hence checking both here.
+_SHARED_TAVILY_KEYRING_LOOKUPS: tuple[tuple[str, str], ...] = (
+    ("lucys-foundry", "tavily"),
+    ("agent-fleet-rts", "tavily"),
+)
+
+
+def _tavily_api_key() -> str:
+    """Resolve TAVILY_API_KEY: this repo's own keyring convention (see
+    ``get_secret``, which also falls back to the env var), then the shared
+    lucys-foundry keychain (see ``_SHARED_TAVILY_KEYRING_LOOKUPS``)."""
+    key = get_secret("TAVILY_API_KEY")
+    if key:
+        return key
+
+    try:
+        import keyring
+
+        for service, account in _SHARED_TAVILY_KEYRING_LOOKUPS:
+            key = keyring.get_password(service, account)
+            if key:
+                return key
+    except Exception:
+        pass
+
+    return ""
+
+
+def _title_from_markdown(content: str) -> str:
+    """First non-empty line of extracted markdown, used as a title fallback
+    when Tavily's response has no (or an empty) ``title`` field."""
+    for line in content.splitlines():
+        line = line.strip()
+        if line:
+            return line.lstrip("#").strip()
+    return ""
+
+
+#: Tavily fetches LinkedIn post pages via the logged-out guest view, which
+#: prepends a fixed nav/sign-in preamble ("Agree & Join LinkedIn", top nav,
+#: sign-in/join links — same on every post) before the actual content. Drop
+#: everything up to this heading, where the real post starts.
+_LINKEDIN_POST_HEADING_RE = re.compile(r"^#\s+.+[’']s Post\s*$", re.MULTILINE)
+
+#: Guest-view footer starts here: a content-category nav menu, copyright,
+#: language picker, and a "sign in to view more" call-to-action — none of it
+#: post content. Drop everything from this heading onward.
+_LINKEDIN_FOOTER_MARKER = "## Explore content categories"
+
+#: Words that make up LinkedIn's like/reply/share/reaction-count UI chrome.
+#: A line built entirely out of these (after stripping markdown link syntax)
+#: is a button row, not content — safe to drop. Lines of pure digits (e.g. a
+#: comment that's just a number, common in "guess the number" posts) are
+#: untouched since they have no letters to match here.
+_LINKEDIN_CHROME_WORDS = frozenset(
+    {
+        "like",
+        "reply",
+        "comment",
+        "share",
+        "copy",
+        "reaction",
+        "reactions",
+        "linkedin",
+        "facebook",
+        "x",
+    }
+)
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+
+
+def _is_linkedin_chrome_line(line: str) -> bool:
+    # Surround each link's text with spaces so adjacent links (e.g.
+    # "[Like](url)[Reply](url)") don't concatenate into one token.
+    text = _MARKDOWN_LINK_RE.sub(r" \1 ", line)
+    tokens = re.findall(r"[A-Za-z]+", text)
+    return bool(tokens) and all(t.lower() in _LINKEDIN_CHROME_WORDS for t in tokens)
+
+
+def _clean_linkedin_markdown(content: str, url: str) -> str:
+    """Strip LinkedIn guest-view chrome from Tavily's markdown: the nav/
+    sign-in preamble before the post, the "Explore content categories" footer
+    (categories nav, copyright, language picker, sign-in CTA) after the
+    comments, and inline Like/Reply/Share/Reaction button rows scattered
+    throughout. No-op for non-LinkedIn URLs, or when a marker isn't found
+    (e.g. articles without a "<Name>'s Post" heading) — safe to call
+    unconditionally.
+    """
+    if "linkedin.com" not in url:
+        return content
+
+    match = _LINKEDIN_POST_HEADING_RE.search(content)
+    if match:
+        content = content[match.start() :]
+
+    footer_idx = content.find(_LINKEDIN_FOOTER_MARKER)
+    if footer_idx != -1:
+        content = content[:footer_idx]
+
+    lines = [ln for ln in content.splitlines() if not _is_linkedin_chrome_line(ln)]
+    content = re.sub(r"\n{3,}", "\n\n", "\n".join(lines))
+    return content.strip()
+
+
+def _fetch_tavily(url: str) -> tuple[str, str, list[str]]:
+    """Extract title/body/images via Tavily's Extract API.
+
+    Handles JS-rendered pages and Cloudflare-gated sites that ``_fetch_html_body``
+    cannot (see ``TAVILY_EXTRACT_DEPTH``, default "advanced").
+    """
+    from tavily import TavilyClient  # type: ignore[import-untyped]
+
+    api_key = _tavily_api_key()
+    if not api_key:
+        raise ValueError("TAVILY_API_KEY not configured (keyring or env)")
+
+    depth = os.environ.get("TAVILY_EXTRACT_DEPTH", "advanced").strip().lower()
+    if depth not in ("basic", "advanced"):
+        depth = "advanced"
+
+    client = TavilyClient(api_key=api_key)
+    response = client.extract(
+        urls=[url], extract_depth=depth, format="markdown", include_images=True
+    )
+
+    failed = response.get("failed_results") or []
+    if failed:
+        reason = failed[0].get("error") or "extraction failed"
+        raise ValueError(f"tavily: {reason}")
+
+    results = response.get("results") or []
+    if not results:
+        raise ValueError("tavily: no content extracted")
+
+    result = results[0]
+    content = _clean_linkedin_markdown(str(result.get("raw_content") or ""), url)
+    title = str(result.get("title") or "") or _title_from_markdown(content)
+    # Tavily's own images field is the only source now — its markdown ![]()
+    # refs for LinkedIn are unreliable (comment avatars, broken lazy-load
+    # placeholders for the real post image), see module docstring.
+    images = [str(u) for u in (result.get("images") or []) if u]
+    return title, content, images
 
 
 # ---------------------------------------------------------------------------
 # Strategy registry  (dispatch table — extend here for new URL types)
 # ---------------------------------------------------------------------------
 
-#: Maps url_type → fetch strategy.  Add entries here to support new types.
-STRATEGIES: dict[str, FetchStrategy] = {
-    "article": _fetch_html_body,
-    "documentation": _fetch_html_body,
-    "research": _fetch_html_body,
-    "tool": _fetch_html_body,
-    "social": _fetch_html_body,
-    "product": _fetch_html_body,
-    # Metadata-only (body extraction deferred)
-    "video": _fetch_metadata_only,
-    "repository": _fetch_metadata_only,
-    "podcast": _fetch_metadata_only,
+#: Body-fetch backends selectable via ``LINKEDIN_EXTRACTOR=httpx|tavily``.
+_BODY_BACKENDS: dict[str, FetchStrategy] = {
+    "httpx": _fetch_html_body,
+    "tavily": _fetch_tavily,
 }
+
+#: URL types that are always metadata-only (body extraction deferred), regardless
+#: of ``LINKEDIN_EXTRACTOR`` — no point spending Tavily credits on YouTube/GitHub.
+_METADATA_ONLY_URL_TYPES: frozenset[str] = frozenset({"video", "repository", "podcast"})
 
 #: URL types whose content we never attempt to fetch (binary / media files).
 SKIP_TYPES: frozenset[str] = frozenset(
     {"image", "document", "presentation", "archive", "audio"}
 )
+
+
+def _extractor_backend() -> str:
+    """Resolve ``LINKEDIN_EXTRACTOR`` (default ``httpx``).
+
+    Falls back to ``httpx`` with a warning when ``tavily`` is selected but no
+    ``TAVILY_API_KEY`` is configured, so the pipeline keeps working without it.
+    """
+    backend = os.environ.get("LINKEDIN_EXTRACTOR", "httpx").strip().lower()
+    if backend not in _BODY_BACKENDS:
+        backend = "httpx"
+    if backend == "tavily" and not _tavily_api_key():
+        logger.warning(
+            "LINKEDIN_EXTRACTOR=tavily but no TAVILY_API_KEY configured "
+            "(keyring or env) — falling back to httpx"
+        )
+        return "httpx"
+    return backend
+
+
+def _strategy_for(url_type: str) -> FetchStrategy:
+    """Dispatch by URL type; body-fetch types honor ``LINKEDIN_EXTRACTOR``."""
+    if url_type in _METADATA_ONLY_URL_TYPES:
+        return _fetch_metadata_only
+    return _BODY_BACKENDS[_extractor_backend()]
+
 
 # Cloudflare JS challenge markers — title and body fragments that identify a
 # challenge page rather than real content (Medium, some news sites).
@@ -532,7 +729,8 @@ def save_resource(
     - ``{stem}.md``    — body text (only when content is non-empty)
 
     ``cited_by`` is merged with any existing entries so multiple posts citing
-    the same resource accumulate rather than overwrite.
+    the same resource accumulate rather than overwrite. ``result.images``
+    (remote URLs) is stored as-is — not downloaded — see module docstring.
     """
     stem = _url_stem(url)
     resource_dir = _resource_dir()
@@ -647,14 +845,13 @@ def fetch_linked_content(
         )
 
     logger.info("GET %s [%s]", fetch_url, url_type)
-    strategy = STRATEGIES.get(url_type, _fetch_html_body)
     try:
         if "arxiv.org" in fetch_url.lower():
-            title, content = _fetch_arxiv(fetch_url)
+            title, content, images = _fetch_arxiv(fetch_url)
         elif is_x_status_url(fetch_url):
-            title, content = _fetch_x_status(fetch_url)
+            title, content, images = _fetch_x_status(fetch_url)
         else:
-            title, content = strategy(fetch_url)
+            title, content, images = _strategy_for(url_type)(fetch_url)
         title = fix_mojibake(title)
         content = fix_mojibake(content)
         logger.info("  -> %s", title[:80] if title else "(no title)")
@@ -683,6 +880,7 @@ def fetch_linked_content(
             resolved_url=resolved,
             title=title,
             content=content,
+            images=images,
             url_type=url_type,
             domain=domain,
             fetched_at=datetime.now(timezone.utc).isoformat(),
