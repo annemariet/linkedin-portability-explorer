@@ -65,11 +65,18 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data-dir", type=Path, default=None)
     ap.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print planned merges without writing (default when --apply is omitted)",
+    )
+    ap.add_argument(
         "--apply",
         action="store_true",
-        help="Write merged files and delete superseded stems (default: dry-run)",
+        help="Write merged files and delete superseded stems",
     )
     args = ap.parse_args()
+    if args.apply and args.dry_run:
+        ap.error("use either --dry-run or --apply, not both")
 
     if args.data_dir:
         content_dir = args.data_dir / "content"
