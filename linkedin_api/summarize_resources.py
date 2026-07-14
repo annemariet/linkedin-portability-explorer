@@ -54,14 +54,17 @@ def list_resources_for_summary(
     force: bool = False,
     urns: set[str] | None = None,
 ) -> list[FetchResult]:
-    scope_hashes: set[str] | None = None
+    scope: set[str] | None = None
     if urns is not None:
-        scope_hashes = {hashlib.sha256(u.encode()).hexdigest() for u in urns if u}
+        scope = set(urns)
+        for u in urns:
+            if u:
+                scope.add(hashlib.sha256(u.encode()).hexdigest())
     out: list[FetchResult] = []
     for json_path in sorted(_resource_dir().glob("*.json")):
-        if scope_hashes is not None:
+        if scope is not None:
             cited = set(_resource_cited_by_hashes(json_path))
-            if not cited.intersection(scope_hashes):
+            if not cited.intersection(scope):
                 continue
         result = _read_resource_json(json_path)
         if result is None or not is_exportable_resource(result):
