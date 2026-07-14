@@ -1241,14 +1241,13 @@ class TestFetchLinkedContentViaTavily:
 class TestCitedByUrnNormalization:
     def test_save_resource_normalizes_legacy_urn_in_cited_by(self, tmp_path):
         """Raw URN entries written before the hash-conversion fix are normalized."""
-        import hashlib
         import json
 
         from linkedin_api.fetch_linked_content import _resource_dir, _url_stem
 
         url = "https://example.com/legacy-urn"
         urn = "urn:li:activity:9999999999999"
-        expected_hash = hashlib.sha256(urn.encode()).hexdigest()
+        expected_stem = "9999999999999"
 
         # Simulate a file written with a raw URN in cited_by
         stem = _url_stem(url)
@@ -1266,7 +1265,6 @@ class TestCitedByUrnNormalization:
         }
         (rdir / f"{stem}.json").write_text(json.dumps(legacy_data), encoding="utf-8")
 
-        # Re-save: the URN should be converted to a hash
         result = FetchResult(
             url=url, resolved_url=url, title="T", content="C", url_type="article"
         )
@@ -1274,11 +1272,10 @@ class TestCitedByUrnNormalization:
 
         saved = json.loads((rdir / f"{stem}.json").read_text(encoding="utf-8"))
         assert urn not in saved["cited_by"]
-        assert expected_hash in saved["cited_by"]
+        assert expected_stem in saved["cited_by"]
 
     def test_update_resource_cited_by_normalizes_legacy_urn(self, tmp_path):
-        """_update_resource_cited_by also converts existing URN entries to hashes."""
-        import hashlib
+        """_update_resource_cited_by also converts existing URN entries to post_id stems."""
         import json
 
         from linkedin_api.fetch_linked_content import (
@@ -1290,8 +1287,8 @@ class TestCitedByUrnNormalization:
         url = "https://example.com/legacy-urn-update"
         old_urn = "urn:li:activity:1111111111111"
         new_urn = "urn:li:activity:2222222222222"
-        old_hash = hashlib.sha256(old_urn.encode()).hexdigest()
-        new_hash = hashlib.sha256(new_urn.encode()).hexdigest()
+        old_stem = "1111111111111"
+        new_stem = "2222222222222"
 
         stem = _url_stem(url)
         rdir = _resource_dir()
@@ -1303,5 +1300,5 @@ class TestCitedByUrnNormalization:
 
         saved = json.loads((rdir / f"{stem}.json").read_text(encoding="utf-8"))
         assert old_urn not in saved["cited_by"]
-        assert old_hash in saved["cited_by"]
-        assert new_hash in saved["cited_by"]
+        assert old_stem in saved["cited_by"]
+        assert new_stem in saved["cited_by"]

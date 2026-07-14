@@ -19,32 +19,41 @@ Examples::
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
 import sys
 from collections import defaultdict
 from pathlib import Path
+from typing import Any, Iterator
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from linkedin_api.activity_csv import get_data_dir  # noqa: E402
-from linkedin_api.content_store import _content_dir  # noqa: E402
+from linkedin_api.content_keys import content_stem  # noqa: E402
 
 
-def _group_by_post_id(content_dir: Path) -> dict[str, list[str]]:
-    groups: dict[str, list[str]] = defaultdict(list)
+def _post_id_from_meta(stem: str, meta: dict[str, Any]) -> str:
+    return (str(meta.get("post_id") or "")).strip() or (stem if stem.isdigit() else "")
+
+
+def _iter_meta_records(content_dir: Path) -> Iterator[tuple[str, dict[str, Any]]]:
     for meta_path in sorted(content_dir.glob("*.meta.json")):
         stem = meta_path.name.removesuffix(".meta.json")
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
-        pid = (str(meta.get("post_id") or "")).strip() or (
-            stem if stem.isdigit() else ""
-        )
+        if not isinstance(meta, dict):
+            continue
+        yield stem, meta
+
+
+def _group_by_post_id(content_dir: Path) -> dict[str, list[str]]:
+    groups: dict[str, list[str]] = defaultdict(list)
+    for stem, meta in _iter_meta_records(content_dir):
+        pid = _post_id_from_meta(stem, meta)
         if not pid:
             continue
         if stem not in groups[pid]:
@@ -55,22 +64,17 @@ def _group_by_post_id(content_dir: Path) -> dict[str, list[str]]:
 def build_stem_remap(content_dir: Path) -> dict[str, str]:
     """Map legacy content stems (hash filenames, sha256 URNs) to ``post_id``."""
     remap: dict[str, str] = {}
-    for meta_path in sorted(content_dir.glob("*.meta.json")):
-        stem = meta_path.name.removesuffix(".meta.json")
-        try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            continue
-        pid = (str(meta.get("post_id") or "")).strip() or (
-            stem if stem.isdigit() else ""
-        )
+    for stem, meta in _iter_meta_records(content_dir):
+        pid = _post_id_from_meta(stem, meta)
         if not pid:
             continue
         if stem != pid:
             remap[stem] = pid
         post_urn = (str(meta.get("post_urn") or "")).strip()
         if post_urn:
-            remap[hashlib.sha256(post_urn.encode()).hexdigest()] = pid
+            legacy = content_stem("", fallback_urn=post_urn)
+            if legacy and legacy != pid:
+                remap[legacy] = pid
     return remap
 
 
@@ -82,19 +86,20 @@ def remap_cited_by_entry(entry: str, remap: dict[str, str]) -> str:
     if raw in remap:
         return remap[raw]
     if raw.startswith("urn:"):
-        hashed = hashlib.sha256(raw.encode()).hexdigest()
-        return remap.get(hashed, hashed)
+        legacy = content_stem("", fallback_urn=raw)
+        return remap.get(legacy, legacy)
     return raw
 
 
-def remap_cited_by(cited_by: list[object], remap: dict[str, str]) -> list[str]:
+def remap_cited_by(cited_by: list[str], remap: dict[str, str]) -> list[str]:
     """Rewrite ``cited_by`` list entries to ``post_id`` stems; dedupe."""
-    out: list[str] = []
-    for entry in cited_by:
-        mapped = remap_cited_by_entry(str(entry), remap)
-        if mapped and mapped not in out:
-            out.append(mapped)
-    return out
+    return list(
+        dict.fromkeys(
+            mapped
+            for entry in cited_by
+            if (mapped := remap_cited_by_entry(entry, remap))
+        )
+    )
 
 
 def _best_md_stem(content_dir: Path, stems: list[str]) -> str:
@@ -104,9 +109,9 @@ def _best_md_stem(content_dir: Path, stems: list[str]) -> str:
         path = content_dir / f"{stem}.md"
         if not path.exists():
             continue
-        n = len(path.read_text(encoding="utf-8"))
-        if n > best_len:
-            best_len = n
+        size = path.stat().st_size
+        if size > best_len:
+            best_len = size
             best = stem
     return best
 
@@ -130,8 +135,9 @@ def migrate_resource_cited_by(
         raw = data.get("cited_by")
         if not isinstance(raw, list) or not raw:
             continue
-        updated = remap_cited_by(raw, remap)
-        if updated == [str(x) for x in raw if str(x).strip()]:
+        prior = [str(x) for x in raw if str(x).strip()]
+        updated = remap_cited_by(prior, remap)
+        if updated == prior:
             continue
         changed += 1
         if apply:
@@ -160,7 +166,7 @@ def main() -> int:
         ap.error("use either --dry-run or --apply, not both")
 
     data_dir = args.data_dir or get_data_dir()
-    content_dir = data_dir / "content" if args.data_dir else _content_dir()
+    content_dir = data_dir / "content"
     resource_dir = data_dir / "resources"
 
     if not content_dir.is_dir():
@@ -186,7 +192,7 @@ def main() -> int:
             if mp.exists():
                 metas.append(json.loads(mp.read_text(encoding="utf-8")))
 
-        combined: dict = {}
+        combined: dict[str, Any] = {}
         for meta in metas:
             for k, v in meta.items():
                 if k == "activities_ids":
@@ -203,12 +209,6 @@ def main() -> int:
         if md_src.exists():
             shutil.copy2(md_src, content_dir / f"{target}.md")
 
-        for suffix in (".meta.json", ".comments.json"):
-            for stem in stems:
-                p = content_dir / f"{stem}{suffix}"
-                if stem != target and p.exists():
-                    p.unlink()
-
         (content_dir / f"{target}.meta.json").write_text(
             json.dumps(combined, indent=0), encoding="utf-8"
         )
@@ -218,8 +218,6 @@ def main() -> int:
             cp = content_dir / f"{stem}.comments.json"
             if cp.exists():
                 comments = cp.read_text(encoding="utf-8")
-                if stem != target:
-                    cp.unlink()
         if comments and not (content_dir / f"{target}.comments.json").exists():
             (content_dir / f"{target}.comments.json").write_text(
                 comments, encoding="utf-8"

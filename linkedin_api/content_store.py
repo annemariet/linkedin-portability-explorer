@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Optional, cast
 
 from linkedin_api.activity_csv import get_data_dir
-from linkedin_api.content_keys import storage_key
+from linkedin_api.content_keys import content_stem, storage_key
 from linkedin_api.utils.urls import resolve_redirect, strip_utm_params
 
 
@@ -37,10 +37,6 @@ def _content_dir() -> Path:
     return d
 
 
-def _legacy_stem_from_urn(urn: str) -> str:
-    return hashlib.sha256(urn.encode()).hexdigest()
-
-
 def _lookup_stems(post_id: str = "", *, post_urn: str = "") -> list[str]:
     """Candidate stems for read paths (post_id first, then legacy URN hash)."""
     stems: list[str] = []
@@ -49,19 +45,14 @@ def _lookup_stems(post_id: str = "", *, post_urn: str = "") -> list[str]:
         stems.append(stem)
     u = (post_urn or "").strip()
     if u:
-        legacy = _legacy_stem_from_urn(u)
-        if legacy not in stems:
+        legacy = content_stem("", fallback_urn=u)
+        if legacy and legacy not in stems:
             stems.append(legacy)
     return stems
 
 
 def _meta_path_for_stem(stem: str) -> Path:
     return _content_dir() / f"{stem}.meta.json"
-
-
-def _meta_path(post_id: str = "", *, post_urn: str = "") -> Path:
-    stem, _ = storage_key(post_id, post_urn=post_urn)
-    return _meta_path_for_stem(stem)
 
 
 def save_content(

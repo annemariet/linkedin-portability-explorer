@@ -7,12 +7,11 @@ import hashlib
 import json
 import warnings
 from datetime import UTC, datetime
-from pathlib import Path
 
 from linkedin_api.fetch_linked_content import (
     FetchResult,
+    _fetch_result_from_resource_data,
     _resource_dir,
-    _read_resource_json,
     is_exportable_resource,
     save_resource,
 )
@@ -37,17 +36,6 @@ def _resource_summary_complete(result: FetchResult) -> bool:
     )
 
 
-def _resource_cited_by_hashes(json_path: Path) -> list[str]:
-    try:
-        data = json.loads(json_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    raw = data.get("cited_by") or []
-    if not isinstance(raw, list):
-        return []
-    return [str(x) for x in raw if str(x).strip()]
-
-
 def list_resources_for_summary(
     *,
     limit: int | None = None,
@@ -62,11 +50,15 @@ def list_resources_for_summary(
                 scope.add(hashlib.sha256(u.encode()).hexdigest())
     out: list[FetchResult] = []
     for json_path in sorted(_resource_dir().glob("*.json")):
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
         if scope is not None:
-            cited = set(_resource_cited_by_hashes(json_path))
+            cited = set(str(x) for x in (data.get("cited_by") or []) if str(x).strip())
             if not cited.intersection(scope):
                 continue
-        result = _read_resource_json(json_path)
+        result = _fetch_result_from_resource_data(data)
         if result is None or not is_exportable_resource(result):
             continue
         body = (result.content or "").strip()

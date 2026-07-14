@@ -71,6 +71,7 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 from linkedin_api.activity_csv import get_data_dir
+from linkedin_api.content_keys import storage_key
 from linkedin_api.content_store import (
     _content_dir,
     _load_registry,
@@ -609,10 +610,37 @@ def has_resource(url: str) -> bool:
     return any(path.exists() for path in _resource_json_paths(url))
 
 
-def _read_resource_json(json_path: Path) -> FetchResult | None:
-    if not json_path.exists():
-        return None
-    data: dict = json.loads(json_path.read_text(encoding="utf-8"))
+def _cited_by_stem(entry: str) -> str:
+    """Normalize a cited_by entry to a content-store stem (post_id when known)."""
+    raw = str(entry).strip()
+    if not raw:
+        return raw
+    if raw.startswith("urn:"):
+        stem, _ = storage_key("", post_urn=raw)
+        return stem or hashlib.sha256(raw.encode()).hexdigest()
+    return raw
+
+
+def _cited_by_stems(citing_post_urns: list[str] | tuple[str, ...]) -> list[str]:
+    stems: list[str] = []
+    for urn in citing_post_urns:
+        if not urn:
+            continue
+        stem, _ = storage_key("", post_urn=urn)
+        if stem and stem not in stems:
+            stems.append(stem)
+    return stems
+
+
+def _normalize_cited_by(raw_cited: list[object]) -> list[str]:
+    return list(
+        dict.fromkeys(
+            stem for entry in raw_cited if (stem := _cited_by_stem(str(entry)))
+        )
+    )
+
+
+def _fetch_result_from_resource_data(data: dict) -> FetchResult | None:
     data.pop("cited_by", None)  # stored alongside but not part of FetchResult
     allowed = {f.name for f in fields(FetchResult)}
     bullets = data.get("summary_bullets")
@@ -626,6 +654,13 @@ def _read_resource_json(json_path: Path) -> FetchResult | None:
     result.title = fix_mojibake(result.title)
     result.content = fix_mojibake(result.content)
     return result
+
+
+def _read_resource_json(json_path: Path) -> FetchResult | None:
+    if not json_path.exists():
+        return None
+    data: dict = json.loads(json_path.read_text(encoding="utf-8"))
+    return _fetch_result_from_resource_data(data)
 
 
 def _has_mojibake(text: str) -> bool:
@@ -741,11 +776,7 @@ def save_resource(
         try:
             existing_raw = json.loads(json_path.read_text(encoding="utf-8"))
             raw_cited = existing_raw.get("cited_by") or []
-            # Normalize legacy raw-URN entries (stored before hash-conversion fix)
-            existing_cited_by = [
-                hashlib.sha256(e.encode()).hexdigest() if e.startswith("urn:") else e
-                for e in raw_cited
-            ]
+            existing_cited_by = _normalize_cited_by(raw_cited)
             old_content = (existing_raw.get("content") or "").strip()
             new_content = (result.content or "").strip()
             if old_content and new_content and old_content != new_content:
@@ -760,14 +791,12 @@ def save_resource(
         except Exception:
             pass
 
-    # Store content-store hashes (sha256(urn)) so cited_by entries are
-    # directly usable as filenames: content/<hash>.md / content/<hash>.meta.json
-    new_hashes = [hashlib.sha256(u.encode()).hexdigest() for u in citing_post_urns if u]
+    new_stems = _cited_by_stems(citing_post_urns)
     data = asdict(result)
     data["url"] = canonical_resource_url(data["url"])
     resolved = (data.get("resolved_url") or data["url"] or "").strip()
     data["resolved_url"] = canonical_resource_url(resolved) if resolved else ""
-    data["cited_by"] = list(dict.fromkeys(existing_cited_by + new_hashes))
+    data["cited_by"] = list(dict.fromkeys(existing_cited_by + new_stems))
     json_path.write_text(
         json.dumps(data, indent=0, ensure_ascii=False), encoding="utf-8"
     )
@@ -789,13 +818,9 @@ def _update_resource_cited_by(url: str, urns: list[str]) -> None:
     try:
         data = json.loads(json_path.read_text(encoding="utf-8"))
         raw_existing = data.get("cited_by") or []
-        # Normalize legacy raw-URN entries
-        existing = [
-            hashlib.sha256(e.encode()).hexdigest() if e.startswith("urn:") else e
-            for e in raw_existing
-        ]
-        new_hashes = [hashlib.sha256(u.encode()).hexdigest() for u in urns if u]
-        data["cited_by"] = list(dict.fromkeys(existing + new_hashes))
+        existing = _normalize_cited_by(raw_existing)
+        new_stems = _cited_by_stems(urns)
+        data["cited_by"] = list(dict.fromkeys(existing + new_stems))
         json_path.write_text(
             json.dumps(data, indent=0, ensure_ascii=False), encoding="utf-8"
         )
