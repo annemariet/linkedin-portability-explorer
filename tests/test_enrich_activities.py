@@ -9,11 +9,21 @@ from linkedin_api.content_store import (
     load_content,
     load_metadata,
     save_content,
+    save_metadata,
 )
 from linkedin_api.enriched_record import EnrichedRecord
-from linkedin_api.enrich_activities import enrich_activities
+from linkedin_api.enrich_activities import _run_enrichment, enrich_activities
 from linkedin_api.post_extraction import append_missing_resource_urls
 from linkedin_api.utils.urls import is_comment_feed_url
+
+
+def _run_to_completion(activities):
+    gen = _run_enrichment(activities)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as e:
+        return e.value
 
 
 class TestAppendMissingResourceUrls:
@@ -158,3 +168,94 @@ class TestEnrichSavesTimestamps:
             )
         assert count == 0
         assert load_content("999", post_urn=urn) is None
+
+    def test_login_wall_reaction_with_no_urls_counted_not_dropped(self):
+        """A reaction whose HTTP fetch fails and has no API urls to fall
+        back on writes nothing (count == 0), but must still land in
+        telemetry — not vanish uncounted."""
+        urn = "urn:li:activity:998"
+        with patch(
+            "linkedin_api.enrich_activities.fetch_linkedin_post_html",
+            return_value=None,
+        ):
+            count, telemetry = _run_to_completion(
+                [
+                    EnrichedRecord(
+                        post_urn=urn,
+                        post_url=f"https://www.linkedin.com/feed/update/{urn}",
+                        content="",
+                        urls=[],
+                        interaction_type="reaction",
+                        reaction_type="LIKE",
+                        comment_text="",
+                        post_id="998",
+                        activity_id="y",
+                        timestamp=1,
+                        created_at="",
+                    )
+                ]
+            )
+        assert count == 0
+        assert telemetry.fallback_http_fail_no_content == 1
+        assert telemetry.total() == 1
+
+    def test_row_missing_post_id_is_counted(self):
+        urn = "urn:li:activity:1"
+        count, telemetry = _run_to_completion(
+            [
+                EnrichedRecord(
+                    post_urn=urn,
+                    post_url="https://www.linkedin.com/feed/update/urn:li:activity:1",
+                    content="",
+                    urls=[],
+                    interaction_type="reaction",
+                    reaction_type="LIKE",
+                    comment_text="",
+                    post_id="",
+                    activity_id="z",
+                    timestamp=1,
+                    created_at="",
+                )
+            ]
+        )
+        assert count == 0
+        assert telemetry.skip_missing_urn_or_url == 1
+        assert telemetry.total() == 1
+
+    def test_merge_noop_is_counted(self):
+        """mode == "merge" but merge_enrichment_activity finds nothing to
+        change (its own documented None-return case) — that row must
+        still land in telemetry, not vanish uncounted."""
+        from linkedin_api.post_extraction import ENRICHMENT_VERSION
+
+        urn = "urn:li:activity:997"
+        url = f"https://www.linkedin.com/feed/update/{urn}"
+        save_content("997", "x" * 100, post_urn=urn)
+        save_metadata(
+            "997",
+            post_url=url,
+            enrichment_version=ENRICHMENT_VERSION,
+            activities_ids=["already-recorded"],
+            post_urn=urn,
+        )
+        rec = EnrichedRecord(
+            post_urn=urn,
+            post_url=url,
+            content="",
+            urls=[],
+            interaction_type="reaction",
+            reaction_type="LIKE",
+            comment_text="",
+            post_id="997",
+            activity_id="new-activity-id",
+            timestamp=1,
+            created_at="",
+        )
+        with patch(
+            "linkedin_api.enrich_activities.merge_enrichment_activity",
+            return_value=None,
+        ):
+            count, telemetry = _run_to_completion([rec])
+        assert count == 0
+        assert telemetry.merge_noop == 1
+        assert telemetry.total() == 1

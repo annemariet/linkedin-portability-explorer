@@ -11,11 +11,15 @@ from typing import Any, Literal, cast
 
 MAMMOUTH_BASE_URL = "https://api.mammouth.ai/v1"
 OLLAMA_DEFAULT_URL = "http://localhost:11434"
-OPENAI_COMPAT_DEFAULT_MODEL = "gpt-5-nano"
+OPENAI_COMPAT_DEFAULT_MODEL = "gpt-5.4-nano"
 _MAMMOUTH_UNSUPPORTED_CHAT_PREFIXES = ("gemini-2.5", "gemini-2.0-flash")
+# Mammouth public catalog may still list these; chat/completions rejects them.
+_MAMMOUTH_DEPRECATED_CHAT_MODELS: dict[str, str] = {
+    "gpt-5-nano": OPENAI_COMPAT_DEFAULT_MODEL,
+}
 
-_KEYRING_SERVICE = "agent-fleet-rts"
-_KEYRING_ACCOUNT = "mammouth_api_key"
+_KEYRING_SERVICES = ("lucys-foundry", "agent-fleet-rts")
+_MAMMOUTH_KEYRING_ACCOUNTS = ("mammouth", "mammouth_api_key", "openai")
 _ANTHROPIC_KEYRING_LOOKUPS = (
     ("agent-fleet-rts", "Anthropic"),
     ("agent-fleet-rts", "anthropic"),
@@ -138,18 +142,34 @@ class OllamaLLMClient(LLMClient):
 
 
 def resolve_mammouth_chat_model(model: str, *, quiet: bool = False) -> str:
-    if any(model.startswith(p) for p in _MAMMOUTH_UNSUPPORTED_CHAT_PREFIXES):
+    stripped = (model or "").strip()
+    replacement = _MAMMOUTH_DEPRECATED_CHAT_MODELS.get(stripped)
+    if replacement:
         if not quiet:
             warnings.warn(
-                f"LLM_MODEL={model!r} is not supported for Mammouth chat; "
+                f"LLM model {stripped!r} is not available for Mammouth chat; "
+                f"using {replacement}.",
+                stacklevel=2,
+            )
+        return replacement
+    if any(stripped.startswith(p) for p in _MAMMOUTH_UNSUPPORTED_CHAT_PREFIXES):
+        if not quiet:
+            warnings.warn(
+                f"LLM_MODEL={stripped!r} is not supported for Mammouth chat; "
                 f"using {OPENAI_COMPAT_DEFAULT_MODEL}.",
                 stacklevel=2,
             )
         return OPENAI_COMPAT_DEFAULT_MODEL
-    return model
+    return stripped
 
 
 def _resolve_api_key(quiet: bool = False) -> tuple[str | None, str | None]:
+    key = os.getenv("MAMMOUTH_API_KEY")
+    if key:
+        if not quiet:
+            print("  Using API key from MAMMOUTH_API_KEY env var")
+        return key, "MAMMOUTH_API_KEY env var"
+
     key = os.getenv("LLM_API_KEY")
     if key:
         if not quiet:
@@ -159,14 +179,16 @@ def _resolve_api_key(quiet: bool = False) -> tuple[str | None, str | None]:
     try:
         import keyring
 
-        key = keyring.get_password(_KEYRING_SERVICE, _KEYRING_ACCOUNT)
-        if key:
-            if not quiet:
-                print(
-                    f"  Using API key from keyring "
-                    f"(service={_KEYRING_SERVICE!r}, account={_KEYRING_ACCOUNT!r})"
-                )
-            return key, "macOS Keychain"
+        for service in _KEYRING_SERVICES:
+            for account in _MAMMOUTH_KEYRING_ACCOUNTS:
+                key = keyring.get_password(service, account)
+                if key:
+                    if not quiet:
+                        print(
+                            f"  Using API key from keyring "
+                            f"(service={service!r}, account={account!r})"
+                        )
+                    return key, "macOS Keychain"
     except Exception as exc:
         if not quiet:
             warnings.warn(f"Keyring lookup failed: {exc}", stacklevel=3)
@@ -255,9 +277,12 @@ def _resolve_provider_model(
     model = (
         os.getenv(f"{prefix}MODEL")
         or os.getenv("LLM_MODEL")
+        or os.getenv("MAMMOUTH_MODEL")
         or defaults.get(provider)
         or OPENAI_COMPAT_DEFAULT_MODEL
     )
+    if provider in ("openai", "mammouth"):
+        model = resolve_mammouth_chat_model(model, quiet=True)
     return provider, model
 
 
@@ -266,6 +291,21 @@ def get_default_provider_model(stage: Literal["summary", "report"]) -> tuple[str
     if provider == "openai":
         provider = "mammouth"
     return provider, model
+
+
+def get_summary_model_id(
+    provider_override: str | None = None,
+    model_override: str | None = None,
+) -> str:
+    if provider_override and model_override:
+        provider = provider_override
+        model = model_override
+    else:
+        provider, model = _resolve_provider_model("summary")
+    if provider in ("openai", "mammouth"):
+        model = resolve_mammouth_chat_model(model, quiet=True)
+        provider = "mammouth"
+    return f"{provider}:{model}"
 
 
 def get_report_model_id(
@@ -295,7 +335,7 @@ def create_llm(
     else:
         provider, model = _resolve_provider_model(stage)
 
-    if provider == "openai":
+    if provider == "openai" or provider == "mammouth":
         api_key, _ = _resolve_api_key(quiet=quiet)
         if not api_key:
             print("  No OpenAI-compatible API key found. Falling back to Ollama...")
@@ -303,19 +343,18 @@ def create_llm(
                 quiet=quiet, is_fallback=True, json_mode=json_mode
             )
 
+        use_mammouth = provider == "mammouth" or provider_override == "mammouth"
         base_url = (
             MAMMOUTH_BASE_URL
-            if provider_override == "mammouth"
+            if use_mammouth
             else os.getenv("LLM_BASE_URL", MAMMOUTH_BASE_URL)
         )
-        if (
-            MAMMOUTH_BASE_URL in (base_url or "").split("?")[0]
-            and provider_override == "mammouth"
-        ):
+        if MAMMOUTH_BASE_URL in (base_url or "").split("?")[0]:
             model = resolve_mammouth_chat_model(model, quiet=quiet)
 
         if not quiet:
-            print(f"  LLM: OpenAI-compatible ({model} via {base_url})")
+            label = "Mammouth" if use_mammouth else "OpenAI-compatible"
+            print(f"  LLM: {label} ({model} via {base_url})")
         return OpenAICompatLLM(
             model=model,
             api_key=api_key,

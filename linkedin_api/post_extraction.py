@@ -90,11 +90,11 @@ def classify_links_from_soup(
     """
     Walk anchor and image tags in the **post body** subtree only.
 
-    Returns ``(urls, mentions, tags, image_urls)`` — same semantics as
+    Returns ``(urls, mentions, hashtags, image_urls)`` — same semantics as
     ``extract_classified_links`` but derived from HTML, not markdown.
 
     - **mentions**: ``/in/``, ``/company/``, ``/school/`` on LinkedIn hosts.
-    - **tags**: hashtag links → keyword only (no URL in metadata elsewhere).
+    - **hashtags**: hashtag links → keyword only (no URL in metadata elsewhere).
     - **urls**: everything else (external, ``/posts/``, ``/redir/``, ``lnkd.in``, …).
     - **image_urls**: ``<img src=…>`` in the body (for diagnostics / future inline MD).
     """
@@ -214,7 +214,7 @@ class PostExtractionResult:
     html_meta: dict[str, str]
     urls: list[str]
     mentions: list[dict[str, str]]
-    tags: list[str]
+    hashtags: list[str]
     image_urls: list[str]
     comment_count: int = 0
     comments: list[dict] = field(default_factory=list)
@@ -266,7 +266,7 @@ def append_missing_resource_urls(markdown: str, urls: list[str]) -> str:
 def merge_classification_with_api(
     dom_urls: list[str],
     dom_mentions: list[dict[str, str]],
-    dom_tags: list[str],
+    dom_hashtags: list[str],
     urls_from_api: list[str],
 ) -> tuple[list[str], list[dict[str, str]], list[str]]:
     """
@@ -288,8 +288,8 @@ def merge_classification_with_api(
         elif u and u in by_url and (m.get("name") or "").strip():
             if not (by_url[u].get("name") or "").strip():
                 by_url[u]["name"] = m["name"]
-    tag_set = set(dom_tags) | set(ex_t)
-    return out_urls, list(by_url.values()), sorted(tag_set)
+    hashtag_set = set(dom_hashtags) | set(ex_t)
+    return out_urls, list(by_url.values()), sorted(hashtag_set)
 
 
 def save_extraction_to_store(
@@ -310,7 +310,7 @@ def save_extraction_to_store(
     Returns ``(body_markdown, resolved_resource_urls)``.
     """
     u, m, t = merge_classification_with_api(
-        ext.urls, ext.mentions, ext.tags, urls_from_api
+        ext.urls, ext.mentions, ext.hashtags, urls_from_api
     )
     meta_urls = resolve_urls_for_metadata(u)
     body = append_missing_resource_urls(ext.markdown_body, meta_urls)
@@ -326,7 +326,7 @@ def save_extraction_to_store(
         post_id,
         urls=meta_urls,
         mentions=m,
-        tags=t,
+        hashtags=t,
         images=ext.image_urls,
         post_url=post_url,
         post_author=ext.html_meta.get("post_author") or "",
@@ -355,7 +355,7 @@ def extract_post_from_html(html: str, final_url: str) -> PostExtractionResult | 
     if not plain or len(plain) < 50:
         return None
 
-    urls, mentions, tags, image_urls = classify_links_from_soup(soup, final_url)
+    urls, mentions, hashtags, image_urls = classify_links_from_soup(soup, final_url)
     html_meta = parse_post_meta_from_soup(soup)
     comment_count, comments = parse_comments_from_ld_json(soup)
 
@@ -369,7 +369,7 @@ def extract_post_from_html(html: str, final_url: str) -> PostExtractionResult | 
         html_meta=html_meta,
         urls=urls,
         mentions=mentions,
-        tags=tags,
+        hashtags=hashtags,
         image_urls=image_urls,
         comment_count=comment_count,
         comments=comments,

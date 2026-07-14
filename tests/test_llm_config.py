@@ -1,6 +1,7 @@
 """Tests for llm_config module (import, config parsing, key resolution)."""
 
 import pytest
+from unittest.mock import patch
 
 from linkedin_api.llm_config import (
     AnthropicLLMClient,
@@ -55,7 +56,7 @@ def test_get_report_model_id_includes_model_in_cache_key(monkeypatch):
 
 
 def test_get_default_provider_model_maps_openai_to_mammouth(monkeypatch):
-    """UI default for openai provider is mammouth; default model is gpt-5-nano."""
+    """UI default for openai provider is mammouth; default model is gpt-5.4-nano."""
     monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.delenv("LLM_MODEL", raising=False)
     monkeypatch.delenv("LLM_SUMMARY_MODEL", raising=False)
@@ -63,7 +64,7 @@ def test_get_default_provider_model_maps_openai_to_mammouth(monkeypatch):
 
     p, m = get_default_provider_model("summary")
     assert p == "mammouth"
-    assert m == "gpt-5-nano"
+    assert m == "gpt-5.4-nano"
 
 
 def test_resolve_provider_model_fallback_to_global(monkeypatch):
@@ -78,6 +79,16 @@ def test_resolve_provider_model_fallback_to_global(monkeypatch):
     assert m == "gpt-4o-mini"
 
 
+def test_create_llm_mammouth_provider(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "mammouth")
+    monkeypatch.setenv("MAMMOUTH_API_KEY", "sk-mammouth")
+    from linkedin_api.llm_config import OpenAICompatLLM
+
+    llm = create_llm(quiet=True)
+    assert isinstance(llm, OpenAICompatLLM)
+    assert "mammouth.ai" in str(getattr(llm._client, "base_url", ""))
+
+
 def test_create_llm_unknown_provider(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "unknown_provider")
     with pytest.raises(ValueError, match="Unknown LLM_PROVIDER"):
@@ -90,6 +101,7 @@ def test_module_importable():
 
 class TestResolveApiKey:
     def test_llm_api_key_env_var(self, monkeypatch):
+        monkeypatch.delenv("MAMMOUTH_API_KEY", raising=False)
         monkeypatch.setenv("LLM_API_KEY", "sk-test-123")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         key, source = _resolve_api_key(quiet=True)
@@ -97,26 +109,31 @@ class TestResolveApiKey:
         assert "LLM_API_KEY" in source
 
     def test_openai_api_key_fallback(self, monkeypatch):
+        monkeypatch.delenv("MAMMOUTH_API_KEY", raising=False)
         monkeypatch.delenv("LLM_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-456")
-        import linkedin_api.llm_config as mod
-
-        monkeypatch.setattr(mod, "_KEYRING_SERVICE", "__test_nonexistent__")
-        key, source = _resolve_api_key(quiet=True)
+        with patch("keyring.get_password", return_value=None):
+            key, source = _resolve_api_key(quiet=True)
         assert key == "sk-openai-456"
         assert "OPENAI_API_KEY" in source
 
+    def test_mammouth_api_key_env(self, monkeypatch):
+        monkeypatch.setenv("MAMMOUTH_API_KEY", "sk-mammouth")
+        key, source = _resolve_api_key(quiet=True)
+        assert key == "sk-mammouth"
+        assert "MAMMOUTH_API_KEY" in source
+
     def test_no_key_returns_none(self, monkeypatch):
+        monkeypatch.delenv("MAMMOUTH_API_KEY", raising=False)
         monkeypatch.delenv("LLM_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        import linkedin_api.llm_config as mod
-
-        monkeypatch.setattr(mod, "_KEYRING_SERVICE", "__test_nonexistent__")
-        key, source = _resolve_api_key(quiet=True)
+        with patch("keyring.get_password", return_value=None):
+            key, source = _resolve_api_key(quiet=True)
         assert key is None
         assert source is None
 
     def test_llm_api_key_takes_priority_over_openai(self, monkeypatch):
+        monkeypatch.delenv("MAMMOUTH_API_KEY", raising=False)
         monkeypatch.setenv("LLM_API_KEY", "sk-llm")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
         key, _ = _resolve_api_key(quiet=True)

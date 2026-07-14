@@ -18,11 +18,6 @@ from linkedin_api.content_store import (
     save_metadata,
 )
 from linkedin_api.enriched_record import EnrichedRecord
-from linkedin_api.fetch_linked_content import (
-    FetchResult,
-    fetch_linked_content,
-    save_resource,
-)
 from linkedin_api.period import parse_period
 from linkedin_api.pipeline import (
     PipelineOptions,
@@ -35,11 +30,9 @@ __all__ = [
     "ActivityRecord",
     "ActivityType",
     "EnrichedRecord",
-    "FetchResult",
     "PipelineOptions",
     "collect_period",
     "extract_activity_records",
-    "fetch_linked_content",
     "get_all_post_activities",
     "get_data_dir",
     "get_default_csv_path",
@@ -51,6 +44,5 @@ __all__ = [
     "run_pipeline",
     "save_content",
     "save_metadata",
-    "save_resource",
     "strip_utm_params",
 ]

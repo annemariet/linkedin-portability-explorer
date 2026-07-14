@@ -1,9 +1,13 @@
 """Tests for content_store module -- file-based content storage."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
+from linkedin_api.activity_csv import get_data_dir
 from linkedin_api.content_store import (
     content_path,
+    download_image_to_store,
     has_content,
     load_content,
     load_metadata,
@@ -189,6 +193,55 @@ class TestNeedsSummary:
         urn = f"urn:li:ugcPost:{post_id}"
         save_content(post_id, "x" * 100, post_urn=urn)
         save_metadata(post_id, summary="Done", post_urn=urn)
+        assert needs_summary(post_id, post_urn=urn) is True
+
+    def test_content_with_tldr_only_incomplete(self):
+        post_id = "tldr_only"
+        urn = f"urn:li:ugcPost:{post_id}"
+        save_content(post_id, "x" * 250, post_urn=urn)
+        update_summary_metadata(
+            post_id,
+            summary="",
+            topics=[],
+            technologies=[],
+            people=[],
+            category=None,
+            post_urn=urn,
+            tldr="Hook sentence.",
+        )
+        assert needs_summary(post_id, post_urn=urn) is True
+
+    def test_short_post_tldr_only_is_complete(self):
+        post_id = "short"
+        urn = f"urn:li:ugcPost:{post_id}"
+        save_content(post_id, "Short post.", post_urn=urn)
+        update_summary_metadata(
+            post_id,
+            summary="",
+            topics=[],
+            technologies=[],
+            people=[],
+            category=None,
+            post_urn=urn,
+            tldr="Short hook.",
+        )
+        assert needs_summary(post_id, post_urn=urn) is False
+
+    def test_content_with_tldr_and_bullets_complete(self):
+        post_id = "complete"
+        urn = f"urn:li:ugcPost:{post_id}"
+        save_content(post_id, "x" * 100, post_urn=urn)
+        update_summary_metadata(
+            post_id,
+            summary="Hook.\n- Point one.",
+            topics=["ai"],
+            technologies=[],
+            people=[],
+            category=None,
+            post_urn=urn,
+            tldr="Hook.",
+            summary_bullets=["Point one."],
+        )
         assert needs_summary(post_id, post_urn=urn) is False
 
 
@@ -209,12 +262,32 @@ class TestListPostsNeedingSummary:
     def test_filters_by_summary(self):
         save_content("100", "a" * 100, post_urn="urn:li:ugcPost:100")
         save_content("200", "b" * 100, post_urn="urn:li:ugcPost:200")
-        save_metadata("200", summary="Done", post_urn="urn:li:ugcPost:200")
+        update_summary_metadata(
+            "200",
+            summary="Done",
+            topics=[],
+            technologies=[],
+            people=[],
+            category=None,
+            post_urn="urn:li:ugcPost:200",
+            tldr="Done.",
+            summary_bullets=["Detail."],
+        )
         posts = list_posts_needing_summary()
         assert len(posts) == 1
         assert posts[0]["post_id"] == "100"
         assert posts[0]["urn"] == "urn:li:ugcPost:100"
         assert posts[0]["content"] == "a" * 100
+
+    def test_scoped_by_urns(self):
+        from linkedin_api.content_store import list_posts_for_summary
+
+        save_content("111", "a" * 100, post_urn="urn:li:ugcPost:111")
+        save_content("222", "b" * 100, post_urn="urn:li:ugcPost:222")
+        scoped = list_posts_for_summary(urns={"111"})
+        assert len(scoped) == 1
+        assert scoped[0]["post_id"] == "111"
+        assert scoped[0]["urn"] == "urn:li:ugcPost:111"
 
 
 class TestUpdateUrlsMetadata:
@@ -261,3 +334,44 @@ class TestDeduplication:
         assert load_content(post_id, post_urn=urn) == content
         content_dir = content_path(post_id).parent
         assert len(list(content_dir.glob("*.md"))) == 1
+
+
+class TestDownloadImageToStore:
+    def _mock_response(
+        self, content: bytes = b"fake-jpg-bytes", status_code: int = 200
+    ):
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.content = content
+        return resp
+
+    def test_downloads_to_content_dir(self):
+        with patch("requests.get", return_value=self._mock_response()):
+            path = download_image_to_store("https://cdn.example.com/photo.jpg")
+
+        assert path is not None
+        assert path.startswith("images/")
+        assert (get_data_dir() / "content" / path).exists()
+
+    def test_repeated_call_is_cached_not_refetched(self):
+        with patch("requests.get", return_value=self._mock_response()) as mock_get:
+            first = download_image_to_store("https://cdn.example.com/photo.jpg")
+            second = download_image_to_store("https://cdn.example.com/photo.jpg")
+
+        assert first == second
+        mock_get.assert_called_once()
+
+    def test_returns_none_on_http_error(self):
+        with patch("requests.get", return_value=self._mock_response(status_code=404)):
+            path = download_image_to_store("https://cdn.example.com/missing.jpg")
+
+        assert path is None
+
+    def test_returns_none_on_network_exception(self):
+        with patch("requests.get", side_effect=ConnectionError("timeout")):
+            path = download_image_to_store("https://cdn.example.com/photo.jpg")
+
+        assert path is None
+
+    def test_returns_none_for_empty_url(self):
+        assert download_image_to_store("") is None

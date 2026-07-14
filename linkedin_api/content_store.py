@@ -221,7 +221,7 @@ _META_KEYS = (
     "category",
     "urls",
     "mentions",
-    "tags",
+    "hashtags",
     "images",
     "post_url",
     "post_urn",
@@ -233,6 +233,10 @@ _META_KEYS = (
     "activity_time_iso",
     "post_created_at",
     "enrichment_version",
+    "tldr",
+    "summary_bullets",
+    "summary_model",
+    "tags",
 )
 
 
@@ -256,7 +260,9 @@ def _merge_mentions(
     return list(by_url.values())
 
 
-def _merge_tags(previous: list[Any] | None, incoming: list[Any] | None) -> list[str]:
+def _merge_hashtags(
+    previous: list[Any] | None, incoming: list[Any] | None
+) -> list[str]:
     prev = {str(x).strip() for x in (previous or []) if x and str(x).strip()}
     inc = {str(x).strip() for x in (incoming or []) if x and str(x).strip()}
     return sorted(prev | inc)
@@ -354,7 +360,7 @@ def save_metadata(
         "category": category if category is not None else "",
         "urls": urls or [],
         "mentions": [],
-        "tags": [],
+        "hashtags": [],
         "images": [],
         "post_url": post_url or "",
         "post_urn": "",
@@ -398,14 +404,14 @@ def save_metadata(
     prev_mentions = (
         existing.get("mentions") if isinstance(existing.get("mentions"), list) else None
     )
-    prev_tags = existing.get("tags")
+    prev_hashtags = existing.get("hashtags")
     meta["mentions"] = _merge_mentions(
         prev_mentions,
         meta.get("mentions") if isinstance(meta.get("mentions"), list) else None,
     )
-    meta["tags"] = _merge_tags(
-        prev_tags if isinstance(prev_tags, list) else None,
-        meta.get("tags") if isinstance(meta.get("tags"), list) else None,
+    meta["hashtags"] = _merge_hashtags(
+        prev_hashtags if isinstance(prev_hashtags, list) else None,
+        meta.get("hashtags") if isinstance(meta.get("hashtags"), list) else None,
     )
     prev_images = existing.get("images")
     inc_images = meta.get("images")
@@ -573,19 +579,39 @@ def update_summary_metadata(
     post_id: str,
     summary: str,
     topics: list[str],
-    technologies: list[str],
-    people: list[str],
-    category: str | None,
+    technologies: list[str] | None = None,
+    people: list[str] | None = None,
+    category: str | None = None,
     *,
     post_urn: str = "",
+    tldr: str = "",
+    summary_bullets: list[str] | None = None,
+    summary_model: str = "",
+    tags: list[str] | None = None,
 ) -> Path:
-    """Update metadata with LLM summary. Preserves urls, post_url from enrichment."""
+    """Update metadata with LLM summary. Preserves urls, post_url from enrichment.
+
+    ``technologies``/``people``/``category`` are left as-is when omitted
+    (``None``) rather than force-written to empty, so a caller that doesn't
+    fill one of them doesn't wipe out anything a prior run stored there.
+    Pass an explicit value (including ``[]``/``""``) to overwrite. Note:
+    ``people`` (LLM-extracted names/companies, including ones with no DOM
+    link) is intentionally separate from ``mentions`` (DOM-scraped profile
+    links) — the two are complementary, not duplicates.
+    """
     meta = dict(load_metadata(post_id, post_urn=post_urn) or {})
     meta["summary"] = summary
     meta["topics"] = topics
-    meta["technologies"] = technologies
-    meta["people"] = people
-    meta["category"] = category or ""
+    meta["technologies"] = (
+        technologies if technologies is not None else meta.get("technologies", [])
+    )
+    meta["people"] = people if people is not None else meta.get("people", [])
+    meta["category"] = category if category is not None else meta.get("category", "")
+    meta["tldr"] = (tldr or "").strip()
+    meta["summary_bullets"] = list(summary_bullets or [])
+    meta["summary_model"] = (summary_model or "").strip()
+    if tags is not None:
+        meta["tags"] = [str(t).strip() for t in tags if str(t).strip()]
     meta["summarized_at"] = datetime.now(timezone.utc).isoformat()
     stem, _ = storage_key(post_id, post_urn=post_urn)
     path = _meta_path_for_stem(stem)
@@ -611,14 +637,37 @@ def has_metadata(post_id: str = "", *, post_urn: str = "") -> bool:
     )
 
 
+def post_summary_complete(
+    meta: dict[str, Any] | None,
+    *,
+    content_len: int | None = None,
+) -> bool:
+    """True when TLDR exists and summary body exists (or TLDR-only for very short posts)."""
+    if not meta:
+        return False
+    if not (meta.get("tldr") or "").strip():
+        return False
+    bullets = meta.get("summary_bullets")
+    if isinstance(bullets, list) and any(str(b).strip() for b in bullets):
+        return True
+    if (meta.get("summary") or "").strip():
+        return True
+    if (
+        content_len is not None
+        and content_len < 200
+        and (meta.get("summarized_at") or "").strip()
+    ):
+        return True
+    return False
+
+
 def needs_summary(post_id: str = "", *, post_urn: str = "") -> bool:
-    """True if the post has content (≥50 chars) but no metadata (or empty summary)."""
+    """True if the post has content but summary metadata is missing or incomplete."""
     if not has_content(post_id, post_urn=post_urn):
         return False
     meta = load_metadata(post_id, post_urn=post_urn)
-    if meta is None:
-        return True
-    return not (meta.get("summary") or "").strip()
+    content_len = len(load_content(post_id, post_urn=post_urn) or "")
+    return not post_summary_complete(meta, content_len=content_len)
 
 
 def _load_registry() -> dict[str, str]:
@@ -681,8 +730,20 @@ def list_summarized_metadata(limit: int | None = None) -> list[dict[str, Any]]:
     return out
 
 
-def list_posts_needing_summary(limit: int | None = None) -> list[dict[str, Any]]:
-    """Posts with content (≥50 chars) but no summary. Returns [{post_id, urn, content}, ...]."""
+def list_posts_for_summary(
+    limit: int | None = None,
+    *,
+    force: bool = False,
+    urns: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Posts with content (≥50 chars).
+
+    Skips posts with complete summary metadata (TLDR + bullets/summary text).
+    With *force*, re-summarize even when complete.
+    When *urns* is set, only posts whose ``post_id`` or ``post_urn`` is in that
+    set are considered (pipeline period scope). Without *urns*, scans the whole
+    content store.
+    """
     out: list[dict[str, Any]] = []
     content_dir = _content_dir()
     registry = _load_registry()
@@ -695,15 +756,23 @@ def list_posts_needing_summary(limit: int | None = None) -> list[dict[str, Any]]
         meta: dict[str, Any] = {}
         if meta_path.exists():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            if (meta.get("summary") or "").strip():
+            if not force and post_summary_complete(meta, content_len=len(content)):
                 continue
         post_id = _stem_to_post_id(stem, meta)
         urn = (meta.get("post_urn") or registry.get(stem) or "").strip()
-        if post_id or urn:
-            out.append({"post_id": post_id, "urn": urn, "content": content})
+        if not post_id and not urn:
+            continue
+        if urns is not None and post_id not in urns and urn not in urns:
+            continue
+        out.append({"post_id": post_id, "urn": urn, "content": content})
         if limit and len(out) >= limit:
             break
     return out
+
+
+def list_posts_needing_summary(limit: int | None = None) -> list[dict[str, Any]]:
+    """Posts with content (≥50 chars) but incomplete LLM summary."""
+    return list_posts_for_summary(limit=limit, force=False)
 
 
 def _register_post(stem: str, post_urn: str) -> None:

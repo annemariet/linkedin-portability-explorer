@@ -1,124 +1,64 @@
 #!/usr/bin/env python3
-"""
-Phase 3: Summarize posts with LLM.
-
-Reads from content store (populated by enrich_activities). Batches posts,
-sends to LLM, extracts summary, topics, technologies, people, category.
-Output written to metadata sidecar (.meta.json).
-"""
+"""Summarize LinkedIn posts with LLM (Explorer-style prompts)."""
 
 from __future__ import annotations
 
-import argparse
-import json
-import re
 import warnings
+from typing import Any
 
 from linkedin_api.content_store import (
-    list_posts_needing_summary,
+    list_posts_for_summary,
+    load_metadata,
     update_summary_metadata,
 )
-from linkedin_api.llm_config import create_llm
+from linkedin_api.llm_config import create_llm, get_summary_model_id
+from linkedin_api.summary_text import (
+    POST_SYSTEM_PROMPT,
+    build_post_user_prompt,
+    parse_summary_response,
+    truncate,
+)
+from linkedin_api.topic_tags import topics_to_catalog_tags
 
 BATCH_SIZE = 5
-
-_SYSTEM_PROMPT = """You extract structured metadata from LinkedIn posts. For each post provide:
-- summary: 1-2 sentence summary
-- topics: list of main topics/themes (e.g. ["AI", "careers"])
-- technologies: tools, frameworks, languages mentioned (e.g. ["Python", "PyTorch"])
-- people: named people or roles mentioned (e.g. ["Jane Doe", "CTO"])
-- category: one of product_announcement, paper, experiment, job_news, opinion, tutorial, other.
-
-Example categories you can pick from: product_announcement (new lib/product), paper (academic/research),
-  experiment (trial/benchmark), job_news (hiring/career), opinion (hot take),
-  tutorial (how-to), other.
-Use empty arrays [] for topics/technologies/people when none apply.
-Output valid JSON only. Format: {"posts": [{"urn": "...", "summary": "...",
-  "topics": [], "technologies": [], "people": [], "category": "..."}]}"""
-
-_USER_PROMPT_TEMPLATE = """For each post below: write a 1-2 sentence summary and fill in
-topics, technologies, people, and category as relevant. Output JSON only.
-
----
-{posts}
----
-"""
+_MAX_POST_CHARS = 2000
 
 
-def _truncate(content: str, max_chars: int = 2000) -> str:
-    if len(content) <= max_chars:
-        return content
-    return content[:max_chars] + "\n...[truncated]"
-
-
-def _build_prompt_batch(posts: list[dict]) -> str:
-    parts = []
-    for i, p in enumerate(posts, 1):
-        urn = p.get("urn", "")
-        content = _truncate(p.get("content", ""))
-        parts.append(f"[Post {i}]\nURN: {urn}\nContent:\n{content}\n")
-    return "\n".join(parts)
-
-
-def _parse_llm_response(text: str, urns: list[str]) -> list[dict]:
-    """Extract JSON from LLM output. urns used to match back to posts."""
-    text = text.strip()
-    # Try to find JSON block
-    match = re.search(r"\{[\s\S]*\}", text)
-    if not match:
-        return []
+def _summarize_one(post: dict[str, Any], llm, *, model_id: str) -> bool:
+    post_id = str(post.get("post_id") or "")
+    urn = str(post.get("urn") or "")
+    if not post_id and not urn:
+        return False
+    meta = load_metadata(post_id, post_urn=urn) or {}
+    user_prompt = build_post_user_prompt(
+        content=truncate(str(post.get("content") or ""), _MAX_POST_CHARS),
+        post_author=str(meta.get("post_author") or ""),
+        post_url=str(meta.get("post_url") or ""),
+    )
     try:
-        data = json.loads(match.group())
-        posts = data.get("posts", data) if isinstance(data, dict) else data
-        if not isinstance(posts, list):
-            return []
-        result = []
-        for i, p in enumerate(posts[: len(urns)]):
-            if isinstance(p, dict):
-                urn = p.get("urn") or (urns[i] if i < len(urns) else "")
-                result.append(
-                    {
-                        "urn": urn,
-                        "summary": str(p.get("summary", "")).strip(),
-                        "topics": [str(x) for x in (p.get("topics") or []) if x],
-                        "technologies": [
-                            str(x) for x in (p.get("technologies") or []) if x
-                        ],
-                        "people": [str(x) for x in (p.get("people") or []) if x],
-                        "category": str(p.get("category", "")).strip() or None,
-                    }
-                )
-        return result
-    except json.JSONDecodeError:
-        return []
-
-
-def _summarize_batch(posts: list[dict], llm) -> int:
-    """Summarize one batch. Returns count updated."""
-    user_prompt = _USER_PROMPT_TEMPLATE.format(posts=_build_prompt_batch(posts))
-    urns = [p.get("urn") or "" for p in posts]
-    post_id_by_urn = {p.get("urn") or "": p.get("post_id") or "" for p in posts}
-    try:
-        response = llm.invoke(user_prompt, system_instruction=_SYSTEM_PROMPT)
+        response = llm.invoke(user_prompt, system_instruction=POST_SYSTEM_PROMPT)
         content = response.content if hasattr(response, "content") else str(response)
-        parsed = _parse_llm_response(content, urns)
-        for p in parsed:
-            urn = p["urn"]
-            post_id = post_id_by_urn.get(urn, "")
-            if post_id:
-                update_summary_metadata(
-                    post_id,
-                    summary=p["summary"],
-                    topics=p["topics"],
-                    technologies=p["technologies"],
-                    people=p["people"],
-                    category=p.get("category"),
-                    post_urn=urn,
-                )
-        return len(parsed)
-    except Exception as e:
-        print(f"  LLM error: {e}")
-        return 0
+        parsed = parse_summary_response(content)
+        if not parsed.ok:
+            return False
+        catalog_tags = topics_to_catalog_tags(parsed.topics, llm=llm, quiet=True)
+        update_summary_metadata(
+            post_id,
+            summary=parsed.summary_text,
+            topics=parsed.topics,
+            technologies=parsed.technologies,
+            people=parsed.people,
+            category=parsed.category or None,
+            post_urn=urn,
+            tldr=parsed.tldr,
+            summary_bullets=parsed.bullets,
+            summary_model=model_id,
+            tags=catalog_tags,
+        )
+        return True
+    except Exception as exc:
+        print(f"  LLM error ({post_id or urn}): {exc}")
+        return False
 
 
 def summarize_posts(
@@ -128,9 +68,11 @@ def summarize_posts(
     quiet: bool = False,
     llm_provider: str | None = None,
     llm_model: str | None = None,
+    force_resummarize: bool = False,
+    urns: set[str] | None = None,
 ) -> int:
     """Summarize posts. Returns count summarized."""
-    posts = list_posts_needing_summary(limit=limit)
+    posts = list_posts_for_summary(limit=limit, force=force_resummarize, urns=urns)
     if not posts:
         if not quiet:
             print("No posts needing summary.")
@@ -142,13 +84,14 @@ def summarize_posts(
         stage="summary",
         provider_override=llm_provider,
         model_override=llm_model,
+        json_mode=False,
     )
+    model_id = get_summary_model_id(llm_provider, llm_model)
     total = 0
-    batches = [posts[i : i + batch_size] for i in range(0, len(posts), batch_size)]
-    it = tqdm(batches, desc="Summarize", unit="batch", disable=quiet)
-    for batch in it:
-        n = _summarize_batch(batch, llm)
-        total += n
+    it = tqdm(posts, desc="Summarize posts", unit="post", disable=quiet)
+    for post in it:
+        if _summarize_one(post, llm, model_id=model_id):
+            total += 1
         it.set_postfix(done=total)
     if total == 0 and not quiet:
         warnings.warn(
@@ -164,13 +107,12 @@ def summarize_posts_streaming(
     quiet: bool = False,
     llm_provider: str | None = None,
     llm_model: str | None = None,
+    force_resummarize: bool = False,
+    urns: set[str] | None = None,
 ):
-    """
-    Generator variant of summarize_posts.
-    Yields (batches_done, total_batches) after each batch.
-    Returns total posts summarized via StopIteration.value.
-    """
-    posts = list_posts_needing_summary(limit=limit)
+    """Generator variant; yields (done, total) after each post."""
+    del batch_size
+    posts = list_posts_for_summary(limit=limit, force=force_resummarize, urns=urns)
     if not posts:
         return 0
     llm = create_llm(
@@ -178,33 +120,66 @@ def summarize_posts_streaming(
         stage="summary",
         provider_override=llm_provider,
         model_override=llm_model,
+        json_mode=False,
     )
-    batches = [posts[i : i + batch_size] for i in range(0, len(posts), batch_size)]
-    total_batches = len(batches)
-    total = 0
-    for i, batch in enumerate(batches):
-        n = _summarize_batch(batch, llm)
-        total += n
-        yield i + 1, total_batches
-    return total
+    model_id = get_summary_model_id(llm_provider, llm_model)
+    total = len(posts)
+    done = 0
+    summarized = 0
+    for post in posts:
+        if _summarize_one(post, llm, model_id=model_id):
+            summarized += 1
+        done += 1
+        yield done, total
+    return summarized
+
+
+def clear_post_summaries(*, limit: int | None = None) -> int:
+    """Remove LLM summary fields so the next run will resummarize."""
+    posts = list_posts_for_summary(limit=limit, force=True)
+    cleared = 0
+    for post in posts:
+        post_id = str(post.get("post_id") or "")
+        urn = str(post.get("urn") or "")
+        if not post_id and not urn:
+            continue
+        update_summary_metadata(
+            post_id,
+            summary="",
+            topics=[],
+            technologies=[],
+            people=[],
+            category="",
+            post_urn=urn,
+            tldr="",
+            summary_bullets=[],
+            summary_model="",
+        )
+        cleared += 1
+    return cleared
 
 
 def main() -> int:
+    import argparse
+
     parser = argparse.ArgumentParser(description="Summarize posts via LLM (Phase 3).")
     parser.add_argument("--limit", type=int, help="Max posts to process")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
+    parser.add_argument(
+        "--force-resummarize",
+        action="store_true",
+        help="Re-run LLM even when TLDR and summary are already complete",
+    )
     parser.add_argument("-q", "--quiet", action="store_true")
     args = parser.parse_args()
     n = summarize_posts(
         limit=args.limit,
         batch_size=args.batch_size,
         quiet=args.quiet,
+        force_resummarize=args.force_resummarize,
     )
     if not args.quiet:
-        if n == 0:
-            print("Summarized 0 posts.")
-        else:
-            print(f"Summarized {n} posts.")
+        print(f"Summarized {n} posts.")
     return 0
 
 
