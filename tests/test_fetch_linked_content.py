@@ -595,7 +595,8 @@ class TestIterPostsWithUrls:
         results = list(_iter_posts_with_urls())
 
         assert len(results) == 1
-        _, urls = results[0]
+        citing_stem, urls = results[0]
+        assert citing_stem == self.POST_ID
         assert urls == ["https://example.com/article"]
 
     def test_yields_mention_urls_with_resource_urls(self):
@@ -611,7 +612,8 @@ class TestIterPostsWithUrls:
         )
 
         results = list(_iter_posts_with_urls())
-        _, urls = results[0]
+        citing_stem, urls = results[0]
+        assert citing_stem == self.POST_ID
         assert urls == ["https://example.com/resource"]
 
     def test_extracts_urls_from_md_when_metadata_urls_empty(self):
@@ -626,7 +628,8 @@ class TestIterPostsWithUrls:
         results = list(_iter_posts_with_urls())
 
         assert len(results) == 1
-        _, urls = results[0]
+        citing_stem, urls = results[0]
+        assert citing_stem == self.POST_ID
         assert "https://github.com/user/repo" in urls
 
     def test_persists_extracted_urls_to_metadata(self):
@@ -655,18 +658,34 @@ class TestIterPostsWithUrls:
 
         results = list(_iter_posts_with_urls())
 
-        _, urls = results[0]
+        citing_stem, urls = results[0]
+        assert citing_stem == self.POST_ID
         assert all("linkedin.com/in/" not in u for u in urls)
         assert "https://example.com/good" in urls
 
     def test_skips_posts_with_no_urls_anywhere(self):
         """Posts with no urls in metadata and no URLs in .md are not yielded."""
         save_content(
-            self.POST_ID, "Just some plain text with no links.", post_urn=self.URN
+            self.POST_ID,
+            "plain text with no links",
+            post_urn=self.URN,
         )
         save_metadata(self.POST_ID, post_urn=self.URN)
 
         assert list(_iter_posts_with_urls()) == []
+
+    def test_citing_stem_uses_post_id_when_post_urn_unparseable(self):
+        """Nested comment URNs in meta must not force hash cited_by stems."""
+        bad_urn = "urn:li:comment:(urn:li:ugcPost:123,456)"
+        save_content(self.POST_ID, "see https://example.com/x", post_urn=bad_urn)
+        save_metadata(
+            self.POST_ID,
+            urls=["https://example.com/x"],
+            post_urn=bad_urn,
+        )
+        citing_stem, urls = list(_iter_posts_with_urls())[0]
+        assert citing_stem == self.POST_ID
+        assert urls == ["https://example.com/x"]
 
 
 # ---------------------------------------------------------------------------

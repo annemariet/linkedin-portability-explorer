@@ -205,16 +205,14 @@ def run_pipeline_ui_streaming(
         lines[-1] = f"Fetched {n_urls} URL(s) from linked posts."
         yield _snapshot()
 
-        from linkedin_api.summarize_resources import summary_scope_for_activities
-
-        summary_scope = summary_scope_for_activities(activities)
+        period_scope = {rec.post_id for rec in activities if rec.post_id}
         n3 = 0
         lines.append("Summarizing…")
         gen = _summarize_posts_streaming(
             args,
             summary_provider=summary_provider,
             summary_model=summary_model,
-            urns=summary_scope,
+            urns=period_scope or None,
         )
         try:
             while True:
