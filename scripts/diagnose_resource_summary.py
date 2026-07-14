@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
@@ -22,7 +21,6 @@ from linkedin_api.fetch_linked_content import (  # noqa: E402
 )
 from linkedin_api.summarize_resources import (  # noqa: E402
     _MIN_ARTICLE_CHARS,
-    _resource_scope_keys,
     _resource_summary_complete,
     list_resources_for_summary,
 )
@@ -58,7 +56,7 @@ def main() -> int:
         f"cited_by ({len(cited_by)}): {cited_by[:5]}{'…' if len(cited_by) > 5 else ''}"
     )
 
-    scope = _resource_scope_keys(set(args.scope or [])) if args.scope else None
+    scope = set(args.scope) if args.scope else None
     if scope is not None:
         overlap = set(cited_by).intersection(scope)
         print(f"scope keys: {len(scope)}")
