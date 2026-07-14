@@ -39,7 +39,7 @@ All commands use `uv run` as the project manages dependencies with `uv`. See `CL
 - **Commits**: commit after each individual change, using gitmojis comments (see https://gitmoji.dev/).
 - **Push destination**: After committing, push to the current branch (e.g. `cursor/model-selection-by-stage-0735`). If you need a specific branch for review, it will be stated in the task.
 - **PR title format**: Use `[TICKET-XX] Title` (e.g. `[LUC-60] Single pass posts report`) when the work is tied to a Linear ticket.
-- **PR comments**: Always address review comments on the PR. Fetch them with `gh api repos/annemariet/linkedin-graph-rag/pulls/<number>/comments` if needed.
+- **PR comments**: Always address review comments on the PR. Fetch them with `gh api repos/annemariet/linkedin-portability-explorer/pulls/<number>/comments` if needed.
 
 ### Gotchas
 

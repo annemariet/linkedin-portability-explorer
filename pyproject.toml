@@ -27,6 +27,7 @@ dependencies = [
     "trafilatura==2.0.0",
     "python-dotenv==1.2.1",
     "tqdm==4.67.1",
+    "tavily-python==0.7.26",
 ]
 
 [project.optional-dependencies]
@@ -49,9 +50,9 @@ linkedin-gradio = "linkedin_api.gradio_app:main"
 linkedin-fetch-content = "linkedin_api.fetch_linked_content:main"
 
 [project.urls]
-Homepage = "https://github.com/annemariet/linkedin-graph-rag"
-Repository = "https://github.com/annemariet/linkedin-graph-rag"
-Issues = "https://github.com/annemariet/linkedin-graph-rag/issues"
+Homepage = "https://github.com/annemariet/linkedin-portability-explorer"
+Repository = "https://github.com/annemariet/linkedin-portability-explorer"
+Issues = "https://github.com/annemariet/linkedin-portability-explorer/issues"
 
 [dependency-groups]
 dev = [
