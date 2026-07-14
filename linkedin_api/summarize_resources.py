@@ -27,6 +27,28 @@ _MIN_ARTICLE_CHARS = 200
 _MAX_ARTICLE_CHARS = 12000
 
 
+def summary_scope_for_activities(activities) -> set[str] | None:
+    """Scope keys for period summarization (posts + linked-article ``cited_by``)."""
+    scope: set[str] = set()
+    for rec in activities:
+        post_id = (getattr(rec, "post_id", None) or "").strip()
+        post_urn = (getattr(rec, "post_urn", None) or "").strip()
+        if post_id:
+            scope.add(post_id)
+        if post_urn:
+            scope.add(post_urn)
+    return scope or None
+
+
+def _resource_scope_keys(scope: set[str]) -> set[str]:
+    """Include legacy ``sha256(post_urn)`` cited_by entries for URN strings in *scope*."""
+    keys = set(scope)
+    for entry in scope:
+        if entry.startswith("urn:"):
+            keys.add(hashlib.sha256(entry.encode()).hexdigest())
+    return keys
+
+
 def _resource_summary_complete(result: FetchResult) -> bool:
     """True when both TLDR and summary bullets exist."""
     if not (result.tldr or "").strip():
@@ -44,10 +66,7 @@ def list_resources_for_summary(
 ) -> list[FetchResult]:
     scope: set[str] | None = None
     if urns is not None:
-        scope = set(urns)
-        for u in urns:
-            if u:
-                scope.add(hashlib.sha256(u.encode()).hexdigest())
+        scope = _resource_scope_keys(urns)
     out: list[FetchResult] = []
     for json_path in sorted(_resource_dir().glob("*.json")):
         try:

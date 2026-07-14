@@ -184,10 +184,10 @@ def run_pipeline_ui_streaming(
         lines[-1] = f"Enriched {n2} activities."
         yield _snapshot()
 
-        urns = {rec.post_id for rec in activities if rec.post_id}
+        fetch_scope = {rec.post_id for rec in activities if rec.post_id}
         n_urls = 0
         lines.append("Fetching linked URLs…")
-        gen = _fetch_linked_content_streaming(args, urns=urns)
+        gen = _fetch_linked_content_streaming(args, urns=fetch_scope or None)
         try:
             while True:
                 if _cancelled():
@@ -205,13 +205,16 @@ def run_pipeline_ui_streaming(
         lines[-1] = f"Fetched {n_urls} URL(s) from linked posts."
         yield _snapshot()
 
+        from linkedin_api.summarize_resources import summary_scope_for_activities
+
+        summary_scope = summary_scope_for_activities(activities)
         n3 = 0
         lines.append("Summarizing…")
         gen = _summarize_posts_streaming(
             args,
             summary_provider=summary_provider,
             summary_model=summary_model,
-            urns=urns or None,
+            urns=summary_scope,
         )
         try:
             while True:
