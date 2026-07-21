@@ -159,18 +159,21 @@ def run_pipeline(
 
     activities, collected = collect_period(opts)
     enriched = enrich_records(activities, limit=opts.limit, quiet=opts.quiet)
-    urns = {rec.post_urn for rec in activities if rec.post_urn}
-    urls_fetched = fetch_linked_urls(opts, urns=urns)
-    if not opts.quiet and urns:
-        print(f"Summarize scope: {len(urns)} post URNs from period")
+    period_scope = {rec.post_id for rec in activities if rec.post_id}
+    urls_fetched = fetch_linked_urls(opts, urns=period_scope or None)
+    if not opts.quiet and period_scope:
+        print(f"Summarize scope: {len(period_scope)} post ids from period")
     summarized = summarize_records(
-        opts, llm_provider=llm_provider, llm_model=llm_model, urns=urns or None
+        opts,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        urns=period_scope or None,
     )
     articles_summarized = summarize_linked_resources(
         opts,
         llm_provider=llm_provider,
         llm_model=llm_model,
-        urns=urns or None,
+        urns=period_scope or None,
     )
     stats = {
         "collected": collected,

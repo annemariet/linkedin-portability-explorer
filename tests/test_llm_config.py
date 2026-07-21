@@ -101,6 +101,7 @@ def test_module_importable():
 
 class TestResolveApiKey:
     def test_llm_api_key_env_var(self, monkeypatch):
+        monkeypatch.delenv("MAMMOUTH_API_KEY", raising=False)
         monkeypatch.setenv("LLM_API_KEY", "sk-test-123")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         key, source = _resolve_api_key(quiet=True)
@@ -132,6 +133,7 @@ class TestResolveApiKey:
         assert source is None
 
     def test_llm_api_key_takes_priority_over_openai(self, monkeypatch):
+        monkeypatch.delenv("MAMMOUTH_API_KEY", raising=False)
         monkeypatch.setenv("LLM_API_KEY", "sk-llm")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
         key, _ = _resolve_api_key(quiet=True)

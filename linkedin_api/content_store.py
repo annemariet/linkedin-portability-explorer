@@ -6,14 +6,15 @@ The user's own text is also in the CSV ``content`` column, but the
 content store is the canonical source for enrichment and indexing.
 
 Files are stored under ``get_data_dir() / "content/"`` as Markdown,
-named by the SHA-256 hash of the activity URN.
+named by ``post_id`` (``{post_id}.md``). Legacy rows without ``post_id``
+fall back to SHA-256 of a post URN.
 
 Content sourcing priority (handled by callers):
 1. Portability API text (available for own content at extraction time)
 2. ``requests`` + HTML-to-Markdown for public posts
 (URLs requiring login are not enriched.)
 
-Phase 3 metadata (summary, topics, etc.) stored as ``{hash}.meta.json`` sidecar.
+Phase 3 metadata (summary, topics, etc.) stored as ``{post_id}.meta.json`` sidecar.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from pathlib import Path
 from typing import Any, Optional, cast
 
 from linkedin_api.activity_csv import get_data_dir
+from linkedin_api.content_keys import content_stem, storage_key
 from linkedin_api.utils.urls import resolve_redirect, strip_utm_params
 
 
@@ -35,27 +37,37 @@ def _content_dir() -> Path:
     return d
 
 
-def _urn_to_filename(urn: str) -> str:
-    """Derive a safe filename from an activity URN."""
-    return hashlib.sha256(urn.encode()).hexdigest() + ".md"
+def _lookup_stems(post_id: str = "", *, post_urn: str = "") -> list[str]:
+    """Candidate stems for read paths (post_id first, then legacy URN hash)."""
+    stems: list[str] = []
+    stem, pu = storage_key(post_id, post_urn=post_urn)
+    if stem:
+        stems.append(stem)
+    u = (post_urn or "").strip()
+    if u:
+        legacy = content_stem("", fallback_urn=u)
+        if legacy and legacy not in stems:
+            stems.append(legacy)
+    return stems
 
 
-def _urn_to_stem(urn: str) -> str:
-    """Filename stem (for registry and .meta.json sidecar)."""
-    return _urn_to_filename(urn).removesuffix(".md")
+def _meta_path_for_stem(stem: str) -> Path:
+    return _content_dir() / f"{stem}.meta.json"
 
 
-def _meta_path(urn: str) -> Path:
-    return _content_dir() / f"{_urn_to_stem(urn)}.meta.json"
-
-
-def save_content(urn: str, text: str) -> Path:
-    """Persist *text* for *urn*.  Returns the file path written."""
-    if not urn or not text:
-        raise ValueError("Both urn and text must be non-empty")
-    path = _content_dir() / _urn_to_filename(urn)
+def save_content(
+    post_id: str,
+    text: str,
+    *,
+    post_urn: str = "",
+) -> Path:
+    """Persist *text* for the post identified by *post_id*. Returns the file path written."""
+    stem, pu = storage_key(post_id, post_urn=post_urn)
+    if not stem or not text:
+        raise ValueError("post_id (or post_urn) and text must be non-empty")
+    path = _content_dir() / f"{stem}.md"
     path.write_text(text, encoding="utf-8")
-    _register_urn(urn)
+    _register_post(stem, pu)
     return path
 
 
@@ -115,15 +127,20 @@ def download_image_to_store(url: str) -> str | None:
     return None
 
 
-def _comments_path(urn: str) -> Path:
-    return _content_dir() / f"{_urn_to_stem(urn)}.comments.json"
+def _comments_path(post_id: str = "", *, post_urn: str = "") -> Path:
+    stem, _ = storage_key(post_id, post_urn=post_urn)
+    return _content_dir() / f"{stem}.comments.json"
 
 
 def save_comments(
-    urn: str, total_count: int, comments: list[dict[str, Any]]
+    post_id: str,
+    total_count: int,
+    comments: list[dict[str, Any]],
+    *,
+    post_urn: str = "",
 ) -> Path | None:
     """
-    Persist comment preview data as a ``{hash}.comments.json`` sidecar.
+    Persist comment preview data as a ``{post_id}.comments.json`` sidecar.
 
     ``total_count`` is LinkedIn's reported total (may exceed ``len(comments)``).
     Each comment dict should have: ``author``, ``author_url``, ``timestamp``,
@@ -131,53 +148,58 @@ def save_comments(
 
     Returns ``None`` (no write) when ``comments`` is empty.
     """
-    if not urn or not comments:
+    stem, pu = storage_key(post_id, post_urn=post_urn)
+    if not stem or not comments:
         return None
     payload: dict[str, Any] = {
-        "post_urn": urn,
+        "post_urn": pu,
+        "post_id": (post_id or "").strip() or stem,
         "total_count": total_count,
         "comments": comments,
     }
-    path = _comments_path(urn)
+    path = _content_dir() / f"{stem}.comments.json"
     path.write_text(json.dumps(payload, indent=0, ensure_ascii=False), encoding="utf-8")
     return path
 
 
-def load_comments(urn: str) -> dict[str, Any] | None:
-    """Load comment sidecar for *urn*, or ``None`` if not present."""
-    if not urn:
-        return None
-    path = _comments_path(urn)
-    if not path.exists():
-        return None
-    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+def load_comments(post_id: str = "", *, post_urn: str = "") -> dict[str, Any] | None:
+    """Load comment sidecar for the post, or ``None`` if not present."""
+    for stem in _lookup_stems(post_id, post_urn=post_urn):
+        path = _content_dir() / f"{stem}.comments.json"
+        if path.exists():
+            return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
+    return None
 
 
-def has_comments(urn: str) -> bool:
-    """True if a comment sidecar exists for *urn*."""
-    return bool(urn) and _comments_path(urn).exists()
+def has_comments(post_id: str = "", *, post_urn: str = "") -> bool:
+    """True if a comment sidecar exists for the post."""
+    return any(
+        (_content_dir() / f"{stem}.comments.json").exists()
+        for stem in _lookup_stems(post_id, post_urn=post_urn)
+    )
 
 
-def load_content(urn: str) -> str | None:
-    """Load stored content for *urn*, or ``None`` if not found."""
-    if not urn:
-        return None
-    path = _content_dir() / _urn_to_filename(urn)
-    if not path.exists():
-        return None
-    return path.read_text(encoding="utf-8")
+def load_content(post_id: str = "", *, post_urn: str = "") -> str | None:
+    """Load stored content for the post, or ``None`` if not found."""
+    for stem in _lookup_stems(post_id, post_urn=post_urn):
+        path = _content_dir() / f"{stem}.md"
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+    return None
 
 
-def has_content(urn: str) -> bool:
-    """Return ``True`` if content has been stored for *urn*."""
-    if not urn:
-        return False
-    return (_content_dir() / _urn_to_filename(urn)).exists()
+def has_content(post_id: str = "", *, post_urn: str = "") -> bool:
+    """Return ``True`` if content has been stored for the post."""
+    return any(
+        (_content_dir() / f"{stem}.md").exists()
+        for stem in _lookup_stems(post_id, post_urn=post_urn)
+    )
 
 
-def content_path(urn: str) -> Path:
-    """Return the file path where content for *urn* would be stored."""
-    return _content_dir() / _urn_to_filename(urn)
+def content_path(post_id: str = "", *, post_urn: str = "") -> Path:
+    """Return the file path where content for the post would be stored."""
+    stem, _ = storage_key(post_id, post_urn=post_urn)
+    return _content_dir() / f"{stem}.md"
 
 
 # --- Phase 3 metadata (summary, topics, etc.) ---
@@ -309,7 +331,7 @@ def _iso_to_ms(iso_str: str | None) -> int | None:
 
 
 def save_metadata(
-    urn: str,
+    post_id: str,
     summary: Optional[str] = None,
     topics: Optional[list[str]] = None,
     technologies: Optional[list[str]] = None,
@@ -317,16 +339,19 @@ def save_metadata(
     category: Optional[str] = None,
     urls: list[str] | None = None,
     post_url: str = "",
+    *,
+    post_urn: str = "",
     **extra: Any,
 ) -> Path:
-    """Save metadata for *urn*.
+    """Save metadata for the post identified by *post_id*.
 
     Merges with any existing file: ``activities_ids`` are unioned in order;
     ``post_id``, ``post_urn``, and ``post_author_url`` are kept from the
     previous file when the new values are empty. ``urls`` are de-duplicated
     and passed through ``resolve_urls_for_metadata``.
     """
-    existing = dict(load_metadata(urn) or {})
+    stem, pu = storage_key(post_id, post_urn=post_urn)
+    existing = dict(load_metadata(post_id, post_urn=post_urn) or {})
     from_extra = {k: v for k, v in extra.items() if k in _META_KEYS}
     meta: dict[str, Any] = {
         "summary": summary if summary is not None else "",
@@ -342,7 +367,7 @@ def save_metadata(
         "post_urn": "",
         "post_author": "",
         "post_author_url": "",
-        "post_id": "",
+        "post_id": (post_id or "").strip() or stem,
         "activities_ids": [],
         "summarized_at": existing.get("summarized_at") or "",
         "activity_time_iso": "",
@@ -351,6 +376,8 @@ def save_metadata(
     }
     meta.update({k: v for k, v in existing.items() if k in _META_KEYS})
     meta.update(from_extra)
+    if pu and not (str(meta.get("post_urn") or "")).strip():
+        meta["post_urn"] = pu
     if summary is not None:
         meta["summary"] = summary
     if topics is not None:
@@ -430,38 +457,42 @@ def save_metadata(
     ):
         meta["enrichment_version"] = existing["enrichment_version"]
 
-    path = _meta_path(urn)
+    path = _meta_path_for_stem(stem)
     path.write_text(json.dumps(meta, indent=0), encoding="utf-8")
+    _register_post(stem, pu)
     return path
 
 
-def update_urls_metadata(urn: str, urls: list[str]) -> Path:
+def update_urls_metadata(post_id: str, urls: list[str], *, post_urn: str = "") -> Path:
     """Update only the ``urls`` field in metadata, preserving all other fields.
 
     Creates a minimal metadata record if none exists yet. URLs are resolved
     via ``resolve_urls_for_metadata``.
     """
-    meta = dict(load_metadata(urn) or {})
+    meta = dict(load_metadata(post_id, post_urn=post_urn) or {})
     meta["urls"] = resolve_urls_for_metadata(urls)
-    path = _meta_path(urn)
+    stem, _ = storage_key(post_id, post_urn=post_urn)
+    path = _meta_path_for_stem(stem)
     path.write_text(json.dumps(meta, indent=0), encoding="utf-8")
     return path
 
 
-def update_metadata_fields(urn: str, **kwargs: Any) -> Path:
+def update_metadata_fields(post_id: str, *, post_urn: str = "", **kwargs: Any) -> Path:
     """Merge specified metadata fields, preserving others. Only _META_KEYS are applied."""
-    meta = dict(load_metadata(urn) or {})
+    meta = dict(load_metadata(post_id, post_urn=post_urn) or {})
     for k, v in kwargs.items():
         if k in _META_KEYS:
             meta[k] = v
-    path = _meta_path(urn)
+    stem, _ = storage_key(post_id, post_urn=post_urn)
+    path = _meta_path_for_stem(stem)
     path.write_text(json.dumps(meta, indent=0), encoding="utf-8")
     return path
 
 
 def merge_enrichment_activity(
-    urn: str,
+    post_id: str,
     *,
+    post_urn: str = "",
     activity_id: str = "",
     post_url: str = "",
     activity_time_iso: str = "",
@@ -472,7 +503,7 @@ def merge_enrichment_activity(
 
     Returns ``None`` if there is no metadata or nothing would change.
     """
-    existing = load_metadata(urn)
+    existing = load_metadata(post_id, post_urn=post_urn)
     if existing is None:
         return None
     meta = dict(existing)
@@ -496,15 +527,15 @@ def merge_enrichment_activity(
         changed = True
     if not changed:
         return None
-    path = _meta_path(urn)
+    stem, _ = storage_key(post_id, post_urn=post_urn)
+    path = _meta_path_for_stem(stem)
     path.write_text(json.dumps(meta, indent=0), encoding="utf-8")
     return path
 
 
 def merge_post_identity(
-    urn: str,
+    post_id: str,
     *,
-    post_id: str = "",
     post_urn: str = "",
     extra_activity_ids: list[str] | None = None,
 ) -> Path | None:
@@ -516,7 +547,7 @@ def merge_post_identity(
 
     Returns ``None`` if there is no metadata file or nothing would change.
     """
-    existing = load_metadata(urn)
+    existing = load_metadata(post_id, post_urn=post_urn)
     if existing is None:
         return None
     meta = dict(existing)
@@ -539,19 +570,21 @@ def merge_post_identity(
     if meta == existing:
         return None
 
-    path = _meta_path(urn)
+    stem, _ = storage_key(post_id, post_urn=post_urn)
+    path = _meta_path_for_stem(stem)
     path.write_text(json.dumps(meta, indent=0), encoding="utf-8")
     return path
 
 
 def update_summary_metadata(
-    urn: str,
+    post_id: str,
     summary: str,
     topics: list[str],
     technologies: list[str] | None = None,
     people: list[str] | None = None,
     category: str | None = None,
     *,
+    post_urn: str = "",
     tldr: str = "",
     summary_bullets: list[str] | None = None,
     summary_model: str = "",
@@ -570,7 +603,7 @@ def update_summary_metadata(
     LLM-extracted here; ``mentions``' URL-derived ``type`` is the reliable
     signal for those, not an LLM guess from post text.
     """
-    meta = dict(load_metadata(urn) or {})
+    meta = dict(load_metadata(post_id, post_urn=post_urn) or {})
     meta["summary"] = summary
     meta["topics"] = topics
     meta["technologies"] = (
@@ -584,25 +617,28 @@ def update_summary_metadata(
     if tags is not None:
         meta["tags"] = [str(t).strip() for t in tags if str(t).strip()]
     meta["summarized_at"] = datetime.now(timezone.utc).isoformat()
-    path = _meta_path(urn)
+    stem, _ = storage_key(post_id, post_urn=post_urn)
+    path = _meta_path_for_stem(stem)
     path.write_text(json.dumps(meta, indent=0), encoding="utf-8")
     return path
 
 
-def load_metadata(urn: str) -> dict[str, Any] | None:
-    """Load metadata for urn, or None if not found."""
-    if not urn:
-        return None
-    path = _meta_path(urn)
-    if not path.exists():
-        return None
-    data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
-    return data
+def load_metadata(post_id: str = "", *, post_urn: str = "") -> dict[str, Any] | None:
+    """Load metadata for the post, or None if not found."""
+    for stem in _lookup_stems(post_id, post_urn=post_urn):
+        path = _meta_path_for_stem(stem)
+        if path.exists():
+            data: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+            return data
+    return None
 
 
-def has_metadata(urn: str) -> bool:
-    """True if metadata exists for urn."""
-    return bool(urn) and _meta_path(urn).exists()
+def has_metadata(post_id: str = "", *, post_urn: str = "") -> bool:
+    """True if metadata exists for the post."""
+    return any(
+        _meta_path_for_stem(stem).exists()
+        for stem in _lookup_stems(post_id, post_urn=post_urn)
+    )
 
 
 def post_summary_complete(
@@ -629,17 +665,17 @@ def post_summary_complete(
     return False
 
 
-def needs_summary(urn: str) -> bool:
-    """True if urn has content but summary metadata is missing or incomplete."""
-    if not has_content(urn):
+def needs_summary(post_id: str = "", *, post_urn: str = "") -> bool:
+    """True if the post has content but summary metadata is missing or incomplete."""
+    if not has_content(post_id, post_urn=post_urn):
         return False
-    meta = load_metadata(urn)
-    content_len = len(load_content(urn) or "")
+    meta = load_metadata(post_id, post_urn=post_urn)
+    content_len = len(load_content(post_id, post_urn=post_urn) or "")
     return not post_summary_complete(meta, content_len=content_len)
 
 
 def _load_registry() -> dict[str, str]:
-    """Load stem -> urn registry once. Returns {} if missing."""
+    """Load stem -> post_urn registry once. Returns {} if missing."""
     registry_path = _content_dir() / "_urn_registry.json"
     if not registry_path.exists():
         return {}
@@ -647,24 +683,35 @@ def _load_registry() -> dict[str, str]:
     return data
 
 
+def _stem_to_post_id(stem: str, meta: dict[str, Any]) -> str:
+    pid = (str(meta.get("post_id") or "")).strip()
+    if pid:
+        return pid
+    if stem.isdigit():
+        return stem
+    return ""
+
+
 def list_summarized_metadata(limit: int | None = None) -> list[dict[str, Any]]:
-    """All posts that have a non-empty summary. Returns list of metadata dicts with urn for content lookup."""
+    """All posts that have a non-empty summary."""
     out: list[dict[str, Any]] = []
     content_dir = _content_dir()
     registry = _load_registry()
     for path in sorted(content_dir.glob("*.meta.json")):
         try:
-            stem = path.stem.removesuffix(".meta")  # hash from xyz.meta.json
-            urn = registry.get(stem)
+            stem = path.stem.removesuffix(".meta")
             meta = json.loads(path.read_text(encoding="utf-8"))
             if not (meta.get("summary") or "").strip():
                 continue
+            post_id = _stem_to_post_id(stem, meta)
+            urn = (meta.get("post_urn") or registry.get(stem) or "").strip()
             act_ids = meta.get("activities_ids") or []
             if not isinstance(act_ids, list):
                 act_ids = []
             out.append(
                 {
-                    "urn": urn or "",
+                    "post_id": post_id,
+                    "urn": urn,
                     "summary": (meta.get("summary") or "").strip(),
                     "topics": meta.get("topics") or [],
                     "technologies": meta.get("technologies") or [],
@@ -675,7 +722,6 @@ def list_summarized_metadata(limit: int | None = None) -> list[dict[str, Any]]:
                     "post_urn": (meta.get("post_urn") or "").strip(),
                     "post_author": (meta.get("post_author") or "").strip(),
                     "post_author_url": (meta.get("post_author_url") or "").strip(),
-                    "post_id": (meta.get("post_id") or "").strip(),
                     "activities_ids": [str(x) for x in act_ids if x],
                     "activity_time_iso": _normalize_activity_time_iso(meta),
                     "post_created_at": (meta.get("post_created_at") or "").strip(),
@@ -698,8 +744,9 @@ def list_posts_for_summary(
 
     Skips posts with complete summary metadata (TLDR + bullets/summary text).
     With *force*, re-summarize even when complete.
-    When *urns* is set, only posts whose URN is in that set are considered
-    (e.g. pipeline period scope). Without *urns*, scans the whole content store.
+    When *urns* is set, only posts whose ``post_id`` or ``post_urn`` is in that
+    set are considered (pipeline period scope). Without *urns*, scans the whole
+    content store.
     """
     out: list[dict[str, Any]] = []
     content_dir = _content_dir()
@@ -710,31 +757,36 @@ def list_posts_for_summary(
         if len(content) < 50:
             continue
         meta_path = content_dir / f"{stem}.meta.json"
-        if meta_path.exists() and not force:
+        meta: dict[str, Any] = {}
+        if meta_path.exists():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            if post_summary_complete(meta, content_len=len(content)):
+            if not force and post_summary_complete(meta, content_len=len(content)):
                 continue
-        urn = registry.get(stem)
-        if not urn:
+        post_id = _stem_to_post_id(stem, meta)
+        urn = (meta.get("post_urn") or registry.get(stem) or "").strip()
+        if not post_id and not urn:
             continue
-        if urns is not None and urn not in urns:
+        if urns is not None and post_id not in urns and urn not in urns:
             continue
-        out.append({"urn": urn, "content": content})
+        out.append({"post_id": post_id, "urn": urn, "content": content})
         if limit and len(out) >= limit:
             break
     return out
 
 
 def list_posts_needing_summary(limit: int | None = None) -> list[dict[str, Any]]:
-    """URNs with content (≥50 chars) but no LLM summary."""
+    """Posts with content (≥50 chars) but incomplete LLM summary."""
     return list_posts_for_summary(limit=limit, force=False)
 
 
-def _register_urn(urn: str) -> None:
-    """Register stem -> urn for reverse lookup."""
+def _register_post(stem: str, post_urn: str) -> None:
+    """Register stem -> post_urn for reverse lookup (legacy file name kept)."""
+    if not stem:
+        return
     registry_path = _content_dir() / "_urn_registry.json"
-    reg = {}
+    reg: dict[str, str] = {}
     if registry_path.exists():
         reg = json.loads(registry_path.read_text(encoding="utf-8"))
-    reg[_urn_to_stem(urn)] = urn
+    if post_urn:
+        reg[stem] = post_urn
     registry_path.write_text(json.dumps(reg, indent=0), encoding="utf-8")

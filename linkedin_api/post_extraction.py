@@ -284,13 +284,13 @@ def merge_classification_with_api(
 
 def save_extraction_to_store(
     *,
-    urn: str,
+    post_id: str,
+    post_urn: str,
     post_url: str,
     ext: PostExtractionResult,
     urls_from_api: list[str],
     activity_time_iso: str,
     post_created: str,
-    post_id: str,
     activities_ids: list[str],
 ) -> tuple[str, list[str]]:
     """
@@ -311,9 +311,9 @@ def save_extraction_to_store(
         if local_img:
             body = body.rstrip() + f"\n\n![]({local_img})"
 
-    save_content(urn, body)
+    save_content(post_id, body, post_urn=post_urn)
     save_metadata(
-        urn,
+        post_id,
         urls=meta_urls,
         mentions=m,
         hashtags=t,
@@ -323,14 +323,12 @@ def save_extraction_to_store(
         post_author_url=ext.html_meta.get("post_author_url") or "",
         activity_time_iso=activity_time_iso,
         post_created_at=post_created,
-        post_urn=urn,
-        post_id=post_id,
+        post_urn=post_urn,
         activities_ids=activities_ids,
         enrichment_version=ENRICHMENT_VERSION,
     )
-    # Save comment sidecar when comments were found in the page.
     if ext.comments:
-        save_comments(urn, ext.comment_count, ext.comments)
+        save_comments(post_id, ext.comment_count, ext.comments, post_urn=post_urn)
     return body, meta_urls
 
 

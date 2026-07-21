@@ -25,10 +25,11 @@ _MAX_POST_CHARS = 2000
 
 
 def _summarize_one(post: dict[str, Any], llm, *, model_id: str) -> bool:
+    post_id = str(post.get("post_id") or "")
     urn = str(post.get("urn") or "")
-    if not urn:
+    if not post_id and not urn:
         return False
-    meta = load_metadata(urn) or {}
+    meta = load_metadata(post_id, post_urn=urn) or {}
     user_prompt = build_post_user_prompt(
         content=truncate(str(post.get("content") or ""), _MAX_POST_CHARS),
         post_author=str(meta.get("post_author") or ""),
@@ -42,12 +43,13 @@ def _summarize_one(post: dict[str, Any], llm, *, model_id: str) -> bool:
             return False
         catalog_tags = topics_to_catalog_tags(parsed.topics, llm=llm, quiet=True)
         update_summary_metadata(
-            urn,
+            post_id,
             summary=parsed.summary_text,
             topics=parsed.topics,
             technologies=parsed.technologies,
             people=parsed.people,
             category=parsed.category or None,
+            post_urn=urn,
             tldr=parsed.tldr,
             summary_bullets=parsed.bullets,
             summary_model=model_id,
@@ -55,7 +57,7 @@ def _summarize_one(post: dict[str, Any], llm, *, model_id: str) -> bool:
         )
         return True
     except Exception as exc:
-        print(f"  LLM error ({urn}): {exc}")
+        print(f"  LLM error ({post_id or urn}): {exc}")
         return False
 
 
@@ -137,16 +139,18 @@ def clear_post_summaries(*, limit: int | None = None) -> int:
     posts = list_posts_for_summary(limit=limit, force=True)
     cleared = 0
     for post in posts:
+        post_id = str(post.get("post_id") or "")
         urn = str(post.get("urn") or "")
-        if not urn:
+        if not post_id and not urn:
             continue
         update_summary_metadata(
-            urn,
+            post_id,
             summary="",
             topics=[],
             technologies=[],
             people=[],
             category="",
+            post_urn=urn,
             tldr="",
             summary_bullets=[],
             summary_model="",

@@ -71,6 +71,7 @@ from bs4 import BeautifulSoup
 from tqdm import tqdm
 
 from linkedin_api.activity_csv import get_data_dir
+from linkedin_api.content_keys import storage_key
 from linkedin_api.content_store import (
     _content_dir,
     _load_registry,
@@ -609,10 +610,50 @@ def has_resource(url: str) -> bool:
     return any(path.exists() for path in _resource_json_paths(url))
 
 
-def _read_resource_json(json_path: Path) -> FetchResult | None:
-    if not json_path.exists():
-        return None
-    data: dict = json.loads(json_path.read_text(encoding="utf-8"))
+def _cited_by_stem(entry: str) -> str:
+    """Normalize a cited_by entry to a content-store stem (post_id when known)."""
+    raw = str(entry).strip()
+    if not raw:
+        return raw
+    if raw.startswith("urn:"):
+        stem, _ = storage_key("", post_urn=raw)
+        return stem or hashlib.sha256(raw.encode()).hexdigest()
+    return raw
+
+
+def _citation_stem(post_id: str, post_urn: str) -> str:
+    """Content-store stem for a citing post (prefer ``post_id`` over URN hashing)."""
+    stem, _ = storage_key(post_id, post_urn=post_urn)
+    return stem
+
+
+def _cited_by_stems(citing: list[str] | tuple[str, ...]) -> list[str]:
+    """Normalize citing keys (post_id stems and/or URNs) for ``cited_by`` storage."""
+    stems: list[str] = []
+    for entry in citing:
+        raw = str(entry).strip()
+        if not raw:
+            continue
+        if raw.isdigit():
+            stem = raw
+        elif raw.startswith("urn:"):
+            stem, _ = storage_key("", post_urn=raw)
+        else:
+            stem = raw
+        if stem and stem not in stems:
+            stems.append(stem)
+    return stems
+
+
+def _normalize_cited_by(raw_cited: list[object]) -> list[str]:
+    return list(
+        dict.fromkeys(
+            stem for entry in raw_cited if (stem := _cited_by_stem(str(entry)))
+        )
+    )
+
+
+def _fetch_result_from_resource_data(data: dict) -> FetchResult | None:
     data.pop("cited_by", None)  # stored alongside but not part of FetchResult
     allowed = {f.name for f in fields(FetchResult)}
     bullets = data.get("summary_bullets")
@@ -626,6 +667,13 @@ def _read_resource_json(json_path: Path) -> FetchResult | None:
     result.title = fix_mojibake(result.title)
     result.content = fix_mojibake(result.content)
     return result
+
+
+def _read_resource_json(json_path: Path) -> FetchResult | None:
+    if not json_path.exists():
+        return None
+    data: dict = json.loads(json_path.read_text(encoding="utf-8"))
+    return _fetch_result_from_resource_data(data)
 
 
 def _has_mojibake(text: str) -> bool:
@@ -741,11 +789,7 @@ def save_resource(
         try:
             existing_raw = json.loads(json_path.read_text(encoding="utf-8"))
             raw_cited = existing_raw.get("cited_by") or []
-            # Normalize legacy raw-URN entries (stored before hash-conversion fix)
-            existing_cited_by = [
-                hashlib.sha256(e.encode()).hexdigest() if e.startswith("urn:") else e
-                for e in raw_cited
-            ]
+            existing_cited_by = _normalize_cited_by(raw_cited)
             old_content = (existing_raw.get("content") or "").strip()
             new_content = (result.content or "").strip()
             if old_content and new_content and old_content != new_content:
@@ -760,14 +804,12 @@ def save_resource(
         except Exception:
             pass
 
-    # Store content-store hashes (sha256(urn)) so cited_by entries are
-    # directly usable as filenames: content/<hash>.md / content/<hash>.meta.json
-    new_hashes = [hashlib.sha256(u.encode()).hexdigest() for u in citing_post_urns if u]
+    new_stems = _cited_by_stems(citing_post_urns)
     data = asdict(result)
     data["url"] = canonical_resource_url(data["url"])
     resolved = (data.get("resolved_url") or data["url"] or "").strip()
     data["resolved_url"] = canonical_resource_url(resolved) if resolved else ""
-    data["cited_by"] = list(dict.fromkeys(existing_cited_by + new_hashes))
+    data["cited_by"] = list(dict.fromkeys(existing_cited_by + new_stems))
     json_path.write_text(
         json.dumps(data, indent=0, ensure_ascii=False), encoding="utf-8"
     )
@@ -789,13 +831,9 @@ def _update_resource_cited_by(url: str, urns: list[str]) -> None:
     try:
         data = json.loads(json_path.read_text(encoding="utf-8"))
         raw_existing = data.get("cited_by") or []
-        # Normalize legacy raw-URN entries
-        existing = [
-            hashlib.sha256(e.encode()).hexdigest() if e.startswith("urn:") else e
-            for e in raw_existing
-        ]
-        new_hashes = [hashlib.sha256(u.encode()).hexdigest() for u in urns if u]
-        data["cited_by"] = list(dict.fromkeys(existing + new_hashes))
+        existing = _normalize_cited_by(raw_existing)
+        new_stems = _cited_by_stems(urns)
+        data["cited_by"] = list(dict.fromkeys(existing + new_stems))
         json_path.write_text(
             json.dumps(data, indent=0, ensure_ascii=False), encoding="utf-8"
         )
@@ -965,36 +1003,38 @@ def fetch_linked_content_streaming(
 
     Returns total URLs successfully fetched via StopIteration.value.
     """
-    # Collect canonical_url → (first_raw_url, [citing_urns])
-    url_to_urns: dict[str, list[str]] = {}
+    # Collect canonical_url → (first_raw_url, [citing_stems])
+    url_to_stems: dict[str, list[str]] = {}
     canonical_to_raw: dict[str, str] = {}
-    for post_urn, post_urls in _iter_posts_with_urls(urns=urns):
+    for citing_stem, post_urls in _iter_posts_with_urls(urns=urns):
+        if not citing_stem:
+            continue
         for url in post_urls:
             canon = canonical_resource_url(url)
-            if canon not in url_to_urns:
-                url_to_urns[canon] = []
+            if canon not in url_to_stems:
+                url_to_stems[canon] = []
                 canonical_to_raw[canon] = url
-            if post_urn and post_urn not in url_to_urns[canon]:
-                url_to_urns[canon].append(post_urn)
+            if citing_stem not in url_to_stems[canon]:
+                url_to_stems[canon].append(citing_stem)
 
     # For already-cached resources update cited_by; collect the rest to fetch.
     jobs: list[tuple[str, list[str]]] = []
-    for canon, citing_urns in url_to_urns.items():
+    for canon, citing_stems in url_to_stems.items():
         raw_url = canonical_to_raw[canon]
         if skip_cached and has_resource(raw_url):
-            if citing_urns:
-                _update_resource_cited_by(raw_url, citing_urns)
+            if citing_stems:
+                _update_resource_cited_by(raw_url, citing_stems)
         else:
-            jobs.append((raw_url, citing_urns))
+            jobs.append((raw_url, citing_stems))
 
     if limit:
         jobs = jobs[:limit]
 
     urls_fetched = 0
-    for i, (url, citing_urns) in enumerate(jobs):
+    for i, (url, citing_stems) in enumerate(jobs):
         result = fetch_linked_content(url)
         if result.ok:
-            save_resource(url, result, citing_post_urns=citing_urns)
+            save_resource(url, result, citing_post_urns=citing_stems)
             urls_fetched += 1
         yield i + 1, len(jobs)
     return urls_fetched
@@ -1025,12 +1065,11 @@ def _urls_from_metadata(meta: dict) -> list[str]:
 
 
 def _iter_posts_with_urls(urns: set[str] | None = None):
-    """Yield (urn, urls) for posts that have URLs.
+    """Yield ``(citing_stem, urls)`` for posts that have URLs.
 
-    Args:
-        urns: When provided, only posts whose URN is in this set are yielded.
-              Pass the set of URNs from the current fetch period to avoid
-              re-processing the entire content store every run.
+    *citing_stem* is the content-store key (``post_id`` when known), not a URN
+    hash. This keeps ``resources/*.json`` ``cited_by`` aligned with pipeline
+    period scope, which passes ``post_id`` values.
 
     First checks ``urls`` and ``mentions`` in ``.meta.json``; if empty, falls back to
     extracting URLs from the ``.md`` content file and persists them so future
@@ -1046,21 +1085,24 @@ def _iter_posts_with_urls(urns: set[str] | None = None):
             continue
 
         stem = meta_path.name.replace(".meta.json", "")
-        urn = registry.get(stem, "")
+        post_id = (str(meta.get("post_id") or "")).strip() or (
+            stem if stem.isdigit() else ""
+        )
+        post_urn = (meta.get("post_urn") or registry.get(stem) or "").strip()
 
-        if urns is not None and urn not in urns:
+        if urns is not None and post_id not in urns and post_urn not in urns:
             continue
 
         urls = _urls_from_metadata(meta)
-        if not urls and urn:
+        if not urls and (post_id or post_urn):
             md_path = content_dir / f"{stem}.md"
             if md_path.exists():
                 text = md_path.read_text(encoding="utf-8")
                 extracted = [
                     u for u in extract_urls_from_text(text) if not should_ignore_url(u)
                 ]
-                if extracted:
-                    update_urls_metadata(urn, extracted)
+                if extracted and post_id:
+                    update_urls_metadata(post_id, extracted, post_urn=post_urn)
                     try:
                         meta = json.loads(meta_path.read_text(encoding="utf-8"))
                     except (json.JSONDecodeError, OSError):
@@ -1070,18 +1112,19 @@ def _iter_posts_with_urls(urns: set[str] | None = None):
 
         if not urls:
             continue
-        yield urn, urls
+        citing_stem = _citation_stem(post_id, post_urn)
+        yield citing_stem, urls
 
 
 def _collect_post_url_jobs(limit_posts: int | None = None) -> list[tuple[str, str]]:
-    """Return ``(citing_post_urn, url)`` pairs in post order for CLI progress."""
+    """Return ``(citing_stem, url)`` pairs in post order for CLI progress."""
     jobs: list[tuple[str, str]] = []
     posts = 0
-    for urn, urls in _iter_posts_with_urls():
+    for citing_stem, urls in _iter_posts_with_urls():
         if limit_posts is not None and posts >= limit_posts:
             break
         for url in urls:
-            jobs.append((urn, url))
+            jobs.append((citing_stem, url))
         posts += 1
     return jobs
 
@@ -1165,10 +1208,10 @@ def main() -> int:
 
     if args.dry_run:
         posts_processed = 0
-        for urn, urls in _iter_posts_with_urls():
+        for citing_stem, urls in _iter_posts_with_urls():
             if args.limit and posts_processed >= args.limit:
                 break
-            label = urn or "(unknown URN)"
+            label = citing_stem or "(unknown post)"
             print(f"\n📄 {label}  ({len(urls)} URL(s))")
             for url in urls:
                 cached = " [cached]" if has_resource(url) else ""
@@ -1190,18 +1233,18 @@ def main() -> int:
         return 0
 
     jobs = _collect_post_url_jobs(limit_posts=args.limit)
-    posts_processed = len({urn for urn, _ in jobs})
+    posts_processed = len({stem for stem, _ in jobs})
     use_progress = not args.no_progress and not args.verbose
 
     if args.verbose:
-        current_urn: str | None = None
-        for urn, url in jobs:
-            if urn != current_urn:
-                current_urn = urn
-                label = urn or "(unknown URN)"
+        current_stem: str | None = None
+        for citing_stem, url in jobs:
+            if citing_stem != current_stem:
+                current_stem = citing_stem
+                label = citing_stem or "(unknown post)"
                 print(f"\n📄 {label}")
             res = _process_one_url(
-                url, skip_cached=args.skip_cached, citing_post_urn=urn
+                url, skip_cached=args.skip_cached, citing_post_urn=citing_stem
             )
             _record_fetch_result(res, quiet=args.quiet, verbose=True, counts=counts)
     else:
