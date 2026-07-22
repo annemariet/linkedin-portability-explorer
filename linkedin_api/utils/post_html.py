@@ -329,7 +329,20 @@ def parse_post_body_from_soup(soup: BeautifulSoup) -> str:
         return "\n".join(content_text)
     og = soup.find("meta", property="og:description")
     if og and og.get("content"):
-        content_text.append(str(og["content"]))
+        og_text = str(og["content"])
+        og_lower = og_text.lower()
+        is_generic_blurb = (
+            _LI_GENERIC_OG_BLURB.lower() in og_lower
+            and _LI_GENERIC_OG_BLURB_2.lower() in og_lower
+        )
+        # linkedin_http_fetch_is_blocked() lets pages with a generic
+        # "SocialMediaPosting" JSON-LD stub through even when the actual
+        # post can't be displayed (that stub is present on the URL
+        # template regardless of whether real content loaded) -- so
+        # reject the known marketing blurb here too, at the point it
+        # would actually be used, rather than relying on that check alone.
+        if not is_generic_blurb:
+            content_text.append(og_text)
     title = soup.find("title")
     if title:
         t = title.get_text(strip=True)

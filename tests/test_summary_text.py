@@ -54,13 +54,13 @@ class SummaryTextTests(unittest.TestCase):
             "AUTHOR: Jane Doe\n"
             "CATEGORY: opinion\n"
             "TLDR: Thanks to the team for shipping this.\n"
-            "- Credits **John Smith** and **Acme Corp** for the launch.\n"
+            "- Credits **John Smith** for the launch.\n"
             "TOPICS: product launch\n"
             "TECH: \n"
-            "PEOPLE: John Smith, Acme Corp\n"
+            "PEOPLE: John Smith\n"
         )
         parsed = parse_summary_response(raw)
-        self.assertEqual(["John Smith", "Acme Corp"], parsed.people)
+        self.assertEqual(["John Smith"], parsed.people)
 
     def test_post_user_prompt_includes_length_hint(self) -> None:
         from linkedin_api.summary_text import build_post_user_prompt

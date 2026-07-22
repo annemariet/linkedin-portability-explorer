@@ -46,9 +46,10 @@ POST_SYSTEM_PROMPT = (
     "even when the post is in another language>\n"
     "6) Then TECH: <comma-separated tools/frameworks/languages explicitly named in the "
     "post, 0-5 items; leave the line empty if none are named>\n"
-    "7) Last line: PEOPLE: <comma-separated full names of people or companies named or "
-    "credited anywhere in the post text, 0-5 items; leave the line empty if none are "
-    "named>\n"
+    "7) Last line: PEOPLE: <comma-separated full names of individual humans named or "
+    "credited anywhere in the post text, 0-5 items; people only — never a company, "
+    "organization, or school name, even if it looks like a person's name; leave the "
+    "line empty if none are named>\n"
     "Do not invent facts."
 )
 
@@ -160,7 +161,8 @@ def _normalize_category(raw: str) -> str:
 
 
 def parse_summary_response(raw_output: str) -> ParsedSummary:
-    """Parse AUTHOR / CATEGORY / TLDR / TOPICS / TECH / PEOPLE preamble and Markdown bullets."""
+    """Parse AUTHOR / CATEGORY / TLDR / TOPICS / TECH / PEOPLE preamble and Markdown
+    bullets."""
     lines = (raw_output or "").splitlines()
     author = ""
     category = ""

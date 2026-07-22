@@ -12,6 +12,7 @@ from linkedin_api.utils.post_html import (
     parse_comments_from_ld_json,
     parse_post_author_from_html,
     parse_post_author_from_soup,
+    parse_post_body_from_soup,
     parse_post_images_from_ld_json,
     parse_post_meta_from_html,
 )
@@ -88,6 +89,41 @@ def test_linkedin_http_fetch_not_blocked_real_post_has_jsonld():
         linkedin_http_fetch_is_blocked("https://www.linkedin.com/posts/x", html)
         is False
     )
+
+
+def test_parse_post_body_rejects_generic_og_blurb_even_with_jsonld_stub():
+    """The exact failure mode from a "this post cannot be displayed" page:
+    linkedin_http_fetch_is_blocked() lets it through (JSON-LD stub present),
+    but the og:description fallback must still refuse the generic blurb --
+    it's not real post content, regardless of what unblocked the page."""
+    html = (
+        "<html><head><title>Sign Up | LinkedIn</title>"
+        '<meta property="og:description" content="500 million+ members | '
+        "Manage your professional identity. Build and engage with your "
+        'professional network. Access knowledge, insights and opportunities.">'
+        "</head><body>"
+        '<script type="application/ld+json">'
+        '{"@type":"SocialMediaPosting","author":{"name":"A"}}'
+        "</script>"
+        "</body></html>"
+    )
+    soup = BeautifulSoup(html, "html.parser")
+    body = parse_post_body_from_soup(soup)
+    assert "500 million" not in body
+    assert "professional identity" not in body
+    assert len(body) < 50
+
+
+def test_parse_post_body_keeps_og_description_when_not_generic():
+    html = (
+        "<html><head>"
+        '<meta property="og:description" content="A real, specific post description '
+        'about a product launch with enough detail to be genuine content.">'
+        "</head><body></body></html>"
+    )
+    soup = BeautifulSoup(html, "html.parser")
+    body = parse_post_body_from_soup(soup)
+    assert "product launch" in body
 
 
 def test_normalize_linkedin_profile_url():

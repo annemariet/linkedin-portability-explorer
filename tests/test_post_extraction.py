@@ -80,14 +80,50 @@ def test_classify_links_skips_comment_trk():
     assert "https://example.com/x" in urls
     assert any("/in/jane" in m["url"] for m in mentions)
     assert not any("bob" in m["url"].lower() for m in mentions)
+    jane = next(m for m in mentions if "/in/jane" in m["url"])
+    assert jane["type"] == "person"
+
+
+def test_classify_links_tags_company_mentions_by_type():
+    """URL path (/company/ vs /in/) is a reliable, non-LLM signal for
+    distinguishing companies from people in mentions."""
+    html = """
+    <html><body>
+    <article data-id="x">
+    <p class="feed-shared-text">Long enough post body text for the selector to match
+    <a href="https://www.linkedin.com/in/jane">Jane</a> and
+    <a href="https://www.linkedin.com/company/acme-corp">Acme Corp</a>
+    </p>
+    </article>
+    </body></html>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    _, mentions, _, _ = classify_links_from_soup(
+        soup, "https://www.linkedin.com/posts/x"
+    )
+    by_url = {m["url"]: m for m in mentions}
+    person = next(m for u, m in by_url.items() if "/in/jane" in u)
+    company = next(m for u, m in by_url.items() if "/company/acme-corp" in u)
+    assert person["type"] == "person"
+    assert company["type"] == "company"
+    assert company["name"] == "Acme Corp"
 
 
 def test_merge_classification_prefers_dom_for_mentions():
     dom_u = ["https://github.com/a"]
-    dom_m = [{"name": "X", "url": "https://www.linkedin.com/in/x"}]
+    dom_m = [{"name": "X", "url": "https://www.linkedin.com/in/x", "type": "person"}]
     u, m, t = merge_classification_with_api(dom_u, dom_m, [], ["https://b.org"])
     assert "https://b.org" in u
     assert any("linkedin.com/in/x" in x["url"] for x in m)
+
+
+def test_merge_classification_backfills_type_from_api_extraction():
+    dom_m = [{"name": "", "url": "https://www.linkedin.com/company/acme", "type": ""}]
+    _, m, _ = merge_classification_with_api(
+        [], dom_m, [], ["https://www.linkedin.com/company/acme"]
+    )
+    merged = next(x for x in m if x["url"] == "https://www.linkedin.com/company/acme")
+    assert merged["type"] == "company"
 
 
 # --- image extraction from JSON-LD ---

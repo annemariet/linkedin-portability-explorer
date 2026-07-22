@@ -79,19 +79,28 @@ def linkedin_redir_unwrap_url(url: str) -> str | None:
     return unquote(target) if target else None
 
 
-def is_linkedin_mention_url(url: str) -> bool:
-    """True for LinkedIn profile, company, or school URLs."""
+def linkedin_mention_type(url: str) -> str:
+    """ "person" | "company" | "school" for a LinkedIn profile/company/school URL,
+    "" otherwise. The URL path is a ground-truth signal (LinkedIn's own URL
+    scheme), unlike asking an LLM to guess entity type from post text."""
     if not url or not is_linkedin_internal_url(url):
-        return False
+        return ""
     try:
         path = urlparse(url.strip()).path.lower()
     except Exception:
-        return False
-    return bool(
-        re.match(r"/in/[^/]+", path)
-        or re.match(r"/company/[^/]+", path)
-        or re.match(r"/school/[^/]+", path)
-    )
+        return ""
+    if re.match(r"/in/[^/]+", path):
+        return "person"
+    if re.match(r"/company/[^/]+", path):
+        return "company"
+    if re.match(r"/school/[^/]+", path):
+        return "school"
+    return ""
+
+
+def is_linkedin_mention_url(url: str) -> bool:
+    """True for LinkedIn profile, company, or school URLs."""
+    return bool(linkedin_mention_type(url))
 
 
 def extract_classified_links(
@@ -103,7 +112,8 @@ def extract_classified_links(
     Returns ``(urls, mentions, tags)``:
 
     - ``urls`` — resources and other links, excluding hashtag and profile/company/school URLs.
-    - ``mentions`` — ``{"name": str, "url": str}`` for LinkedIn profiles/companies/schools.
+    - ``mentions`` — ``{"name": str, "url": str, "type": "person"|"company"|"school"}``
+      for LinkedIn profiles/companies/schools.
     - ``tags`` — hashtag keywords only (no URL stored), from ``/feed/hashtag/…`` links.
     """
     deduped = list(dict.fromkeys(u.strip() for u in (urls or []) if u and u.strip()))
@@ -117,8 +127,9 @@ def extract_classified_links(
         if hk:
             tags_set.add(hk)
             continue
-        if is_linkedin_mention_url(u):
-            mentions_map[u] = {"name": "", "url": u}
+        mtype = linkedin_mention_type(u)
+        if mtype:
+            mentions_map[u] = {"name": "", "url": u, "type": mtype}
             continue
         if should_ignore_url(u):
             continue

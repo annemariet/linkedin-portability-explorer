@@ -234,7 +234,13 @@ _META_KEYS = (
 def _merge_mentions(
     previous: list[dict[str, Any]] | None, incoming: list[dict[str, Any]] | None
 ) -> list[dict[str, str]]:
-    """Union by ``url``; prefer non-empty ``name`` when merging."""
+    """Union by ``url``; prefer non-empty ``name``/``type`` when merging.
+
+    ``type`` is ``"person"``/``"company"``/``"school"`` from the URL path
+    (``/in/``, ``/company/``, ``/school/``) — ground truth from LinkedIn's
+    own URL scheme, not an LLM guess. Missing on entries saved before this
+    field existed; backfilled on the next enrich run for that URN.
+    """
     by_url: dict[str, dict[str, str]] = {}
     for group in (previous or [], incoming or []):
         for raw in group:
@@ -244,10 +250,14 @@ def _merge_mentions(
             if not url:
                 continue
             name = str(raw.get("name") or "").strip()
+            mtype = str(raw.get("type") or "").strip()
             if url not in by_url:
-                by_url[url] = {"name": name, "url": url}
-            elif name and not (by_url[url].get("name") or "").strip():
-                by_url[url]["name"] = name
+                by_url[url] = {"name": name, "url": url, "type": mtype}
+            else:
+                if name and not (by_url[url].get("name") or "").strip():
+                    by_url[url]["name"] = name
+                if mtype and not (by_url[url].get("type") or "").strip():
+                    by_url[url]["type"] = mtype
     return list(by_url.values())
 
 
@@ -586,9 +596,12 @@ def update_summary_metadata(
     (``None``) rather than force-written to empty, so a caller that doesn't
     fill one of them doesn't wipe out anything a prior run stored there.
     Pass an explicit value (including ``[]``/``""``) to overwrite. Note:
-    ``people`` (LLM-extracted names/companies, including ones with no DOM
+    ``people`` (LLM-extracted individual names, including ones with no DOM
     link) is intentionally separate from ``mentions`` (DOM-scraped profile
-    links) — the two are complementary, not duplicates.
+    links, which also carry a ``type`` of person/company/school from the
+    URL path) — complementary, not duplicates. Company names are not
+    LLM-extracted here; ``mentions``' URL-derived ``type`` is the reliable
+    signal for those, not an LLM guess from post text.
     """
     meta = dict(load_metadata(post_id, post_urn=post_urn) or {})
     meta["summary"] = summary

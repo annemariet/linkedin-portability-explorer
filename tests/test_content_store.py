@@ -336,6 +336,51 @@ class TestDeduplication:
         assert len(list(content_dir.glob("*.md"))) == 1
 
 
+class TestMentionsMerge:
+    def test_type_is_preserved_across_saves(self):
+        urn = "urn:li:ugcPost:mentions1"
+        save_metadata(
+            urn,
+            mentions=[
+                {
+                    "name": "Acme Corp",
+                    "url": "https://www.linkedin.com/company/acme",
+                    "type": "company",
+                }
+            ],
+        )
+        # A second save (e.g. a merge row) with no new mentions must not
+        # drop the type already on disk.
+        save_metadata(urn, mentions=[])
+        meta = load_metadata(urn)
+        acme = next(m for m in meta["mentions"] if "acme" in m["url"])
+        assert acme["type"] == "company"
+
+    def test_type_backfilled_for_pre_type_field_entries(self):
+        """Mentions saved before the `type` field existed have no `type`
+        key at all -- merging must not crash and should backfill once a
+        typed entry for the same url comes through."""
+        urn = "urn:li:ugcPost:mentions2"
+        save_metadata(
+            urn,
+            mentions=[{"name": "Jane Doe", "url": "https://www.linkedin.com/in/jane"}],
+        )
+        save_metadata(
+            urn,
+            mentions=[
+                {
+                    "name": "",
+                    "url": "https://www.linkedin.com/in/jane",
+                    "type": "person",
+                }
+            ],
+        )
+        meta = load_metadata(urn)
+        jane = next(m for m in meta["mentions"] if "jane" in m["url"])
+        assert jane["type"] == "person"
+        assert jane["name"] == "Jane Doe"
+
+
 class TestDownloadImageToStore:
     def _mock_response(
         self, content: bytes = b"fake-jpg-bytes", status_code: int = 200
