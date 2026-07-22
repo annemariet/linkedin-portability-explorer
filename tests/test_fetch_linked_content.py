@@ -13,8 +13,10 @@ from linkedin_api.fetch_linked_content import (
     _extractor_backend,
     _fetch_tavily,
     _iter_posts_with_urls,
+    _resource_dir,
     _strategy_for,
     _tavily_api_key,
+    _url_stem,
     fetch_linked_content,
     has_resource,
     load_resource,
@@ -383,6 +385,50 @@ class TestShortUrlResolution:
 class TestResourceStore:
     def test_not_stored_initially(self):
         assert has_resource("https://example.com/new") is False
+
+    def test_has_resource_hydrates_from_object_store_first(self):
+        """A resource that only exists in the mirrored object store (e.g. this
+        is a fresh checkout / ephemeral CI runner with no local resource cache
+        yet) must still be recognized as already-fetched, not silently
+        re-fetched — see ``_hydrate_resource_from_object_store``."""
+        url = "https://example.com/only-in-object-store"
+
+        def fake_hydrate(stem):
+            # Simulate the object store already having this resource: write
+            # the local file exactly like a real S3 download would.
+            json_path = _resource_dir() / f"{stem}.json"
+            json_path.write_text(
+                json.dumps(
+                    {
+                        "url": url,
+                        "resolved_url": url,
+                        "title": "From object store",
+                        "content": "Body",
+                        "images": [],
+                        "url_type": "article",
+                        "domain": "example.com",
+                        "error": "",
+                        "fetched_at": "",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        with patch(
+            "linkedin_api.fetch_linked_content._hydrate_resource_from_object_store",
+            side_effect=fake_hydrate,
+        ) as mock_hydrate:
+            assert has_resource(url) is True
+
+        mock_hydrate.assert_called_once_with(_url_stem(url))
+
+    def test_has_resource_still_false_when_object_store_has_nothing(self):
+        with patch(
+            "linkedin_api.fetch_linked_content._hydrate_resource_from_object_store",
+        ) as mock_hydrate:
+            assert has_resource("https://example.com/nowhere") is False
+
+        mock_hydrate.assert_called_once()
 
     def test_save_and_has_resource(self):
         url = "https://example.com/article"

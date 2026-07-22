@@ -606,7 +606,16 @@ def _resource_json_paths(url: str) -> list[Path]:
 
 
 def has_resource(url: str) -> bool:
-    """True if a FetchResult has been stored for *url*."""
+    """True if a FetchResult has been stored for *url*, locally or in the
+    mirrored object store.
+
+    Hydrates from the object store first (same as ``load_resource``) so
+    ephemeral compute with no persistent local disk (a fresh CI runner, a
+    Scalingo one-off dyno) still recognizes resources fetched in a prior
+    run, instead of silently re-fetching (and re-billing, for Tavily URLs)
+    everything on every run.
+    """
+    _hydrate_resource_from_object_store(_url_stem(url))
     return any(path.exists() for path in _resource_json_paths(url))
 
 
