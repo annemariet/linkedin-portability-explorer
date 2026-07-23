@@ -231,6 +231,12 @@ class TestCategorizeUrl:
             rewrite_fetch_url("https://arxiv.org/abs/2511.00592v2")
             == "https://arxiv.org/html/2511.00592v2"
         )
+        assert (
+            rewrite_fetch_url(
+                "https://open.substack.com/pub/anthonybasille/p/meme-anthropic-ne-comprend-pas-ses?r=krsxd"
+            )
+            == "https://anthonybasille.substack.com/p/meme-anthropic-ne-comprend-pas-ses"
+        )
 
     def test_x_status_id(self):
         from linkedin_api.utils.urls import is_x_status_url, x_status_id

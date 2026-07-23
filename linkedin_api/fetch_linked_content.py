@@ -148,16 +148,24 @@ _BINARY_CONTENT_MARKERS = ("%PDF-", "\x89PNG")
 
 
 def is_exportable_resource(result: FetchResult) -> bool:
-    """Skip binary PDFs, errors, and title-only noise from vault export."""
+    """Skip binary PDFs, errors, metadata-only hosts, and title/URL-only noise."""
     if result.error:
+        return False
+    url_type = (result.url_type or "").strip()
+    if url_type in _METADATA_ONLY_URL_TYPES:
         return False
     body = (result.content or "").strip()
     title = (result.title or "").strip()
     if body and any(body.startswith(marker) for marker in _BINARY_CONTENT_MARKERS):
         return False
-    if not body and not title:
+    if not body:
         return False
-    if not body and title.startswith(("http://", "https://")):
+    # Redirect interstitial / failed extract often stores only a URL as "content".
+    if "\n" not in body and body.startswith(("http://", "https://")):
+        return False
+    if title.startswith(("http://", "https://")) and body.startswith(
+        ("http://", "https://")
+    ):
         return False
     return True
 

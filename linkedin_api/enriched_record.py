@@ -55,6 +55,8 @@ class EnrichedRecord:
     created_at: str
     post_created_at: str | None = None
     enrich_error: str | None = None
+    # Raw CSV activity_type (e.g. reaction_to_comment); distinct from interaction_type.
+    activity_type: str = ""
 
     @classmethod
     def from_activity_record(cls, rec: ActivityRecord) -> EnrichedRecord:
@@ -77,4 +79,5 @@ class EnrichedRecord:
             activity_id=rec.activity_id,
             timestamp=ts,
             created_at=rec.created_at or _format_timestamp(ts),
+            activity_type=rec.activity_type or "",
         )

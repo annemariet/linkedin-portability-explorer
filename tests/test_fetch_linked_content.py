@@ -1367,3 +1367,41 @@ class TestCitedByUrnNormalization:
         assert old_urn not in saved["cited_by"]
         assert old_stem in saved["cited_by"]
         assert new_stem in saved["cited_by"]
+
+
+class TestIsExportableResource:
+    def test_rejects_repository_metadata_only(self):
+        from linkedin_api.fetch_linked_content import is_exportable_resource
+
+        assert not is_exportable_resource(
+            FetchResult(
+                url="https://github.com/org/repo",
+                title="GitHub - org/repo",
+                content="",
+                url_type="repository",
+            )
+        )
+
+    def test_rejects_url_only_body(self):
+        from linkedin_api.fetch_linked_content import is_exportable_resource
+
+        assert not is_exportable_resource(
+            FetchResult(
+                url="https://open.substack.com/pub/a/p/b",
+                title="https://a.substack.com/p/b",
+                content="https://a.substack.com/p/b?triedRedirect=true",
+                url_type="article",
+            )
+        )
+
+    def test_accepts_real_article_body(self):
+        from linkedin_api.fetch_linked_content import is_exportable_resource
+
+        assert is_exportable_resource(
+            FetchResult(
+                url="https://example.com/blog/x",
+                title="Hello",
+                content="A real paragraph of article text.",
+                url_type="article",
+            )
+        )

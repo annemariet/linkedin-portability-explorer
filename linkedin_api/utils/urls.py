@@ -506,8 +506,27 @@ def arxiv_abs_url(url: str) -> str | None:
 
 def rewrite_fetch_url(url: str) -> str:
     """Rewrite known non-HTML URLs to an HTML page when possible."""
-    rewritten = arxiv_html_url(url) or arxiv_abs_url(url)
+    rewritten = arxiv_html_url(url) or arxiv_abs_url(url) or open_substack_pub_url(url)
     return rewritten or url
+
+
+_OPEN_SUBSTACK_PUB_RE = re.compile(
+    r"^https?://open\.substack\.com/pub/([^/]+)/p/([^/?#]+)",
+    re.IGNORECASE,
+)
+
+
+def open_substack_pub_url(url: str) -> str | None:
+    """Map ``open.substack.com/pub/{author}/p/{slug}`` → ``{author}.substack.com/p/{slug}``.
+
+    The open.substack.com interstitial often yields only a redirect URL as
+    "content"; the author host is the real article page.
+    """
+    match = _OPEN_SUBSTACK_PUB_RE.match((url or "").strip())
+    if not match:
+        return None
+    author, slug = match.group(1), match.group(2)
+    return f"https://{author}.substack.com/p/{slug}"
 
 
 _X_STATUS_RE = re.compile(
