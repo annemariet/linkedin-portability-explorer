@@ -320,7 +320,7 @@ REPORT_CACHE_MAX_ENTRIES=100  # Max cached reports and prompts; evict by hits (d
 Linked content fetch (fetch_linked_content, resolve_redirect):
 ```bash
 REQUESTS_SSL_VERIFY=true  # Set to false to skip SSL verification for sites with cert issues (use with caution)
-LINKEDIN_EXTRACTOR=httpx  # httpx (default, BeautifulSoup) | tavily (falls back to httpx if TAVILY_API_KEY missing)
+LINKEDIN_EXTRACTOR=tavily  # tavily (default) | httpx; falls back to httpx if TAVILY_API_KEY missing
 TAVILY_API_KEY=          # Tavily Extract API key (prefer keyring; service name TAVILY_API_KEY)
 TAVILY_EXTRACT_DEPTH=advanced  # basic|advanced — advanced handles JS-rendered/Cloudflare-gated pages
 ```

@@ -852,9 +852,20 @@ class TestTavilyApiKeyResolution:
 
 
 class TestExtractorBackend:
-    def test_defaults_to_httpx(self, monkeypatch):
+    def test_defaults_to_tavily_when_key_present(self, monkeypatch):
         monkeypatch.delenv("LINKEDIN_EXTRACTOR", raising=False)
-        assert _extractor_backend() == "httpx"
+        with patch(
+            "linkedin_api.fetch_linked_content._tavily_api_key",
+            return_value="fake-key",
+        ):
+            assert _extractor_backend() == "tavily"
+
+    def test_defaults_fall_back_to_httpx_without_key(self, monkeypatch):
+        monkeypatch.delenv("LINKEDIN_EXTRACTOR", raising=False)
+        with patch(
+            "linkedin_api.fetch_linked_content._tavily_api_key", return_value=""
+        ):
+            assert _extractor_backend() == "httpx"
 
     def test_selects_tavily_when_key_present(self, monkeypatch):
         monkeypatch.setenv("LINKEDIN_EXTRACTOR", "tavily")
@@ -871,9 +882,14 @@ class TestExtractorBackend:
         ):
             assert _extractor_backend() == "httpx"
 
-    def test_unknown_value_falls_back_to_httpx(self, monkeypatch):
+    def test_unknown_value_falls_back_to_tavily_then_httpx_without_key(
+        self, monkeypatch
+    ):
         monkeypatch.setenv("LINKEDIN_EXTRACTOR", "bogus")
-        assert _extractor_backend() == "httpx"
+        with patch(
+            "linkedin_api.fetch_linked_content._tavily_api_key", return_value=""
+        ):
+            assert _extractor_backend() == "httpx"
 
     def test_metadata_only_types_ignore_extractor(self, monkeypatch):
         monkeypatch.setenv("LINKEDIN_EXTRACTOR", "tavily")
@@ -887,7 +903,7 @@ class TestExtractorBackend:
             assert _strategy_for("repository") is _fetch_metadata_only
 
     def test_article_type_uses_selected_backend(self, monkeypatch):
-        monkeypatch.delenv("LINKEDIN_EXTRACTOR", raising=False)
+        monkeypatch.setenv("LINKEDIN_EXTRACTOR", "httpx")
         from linkedin_api.fetch_linked_content import _fetch_html_body
 
         assert _strategy_for("article") is _fetch_html_body

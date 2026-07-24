@@ -4,10 +4,10 @@ Fetch content from URLs linked in LinkedIn posts/comments.
 Pluggable extractor with strategy dispatch by URL type.
 
 Body-fetch backend selectable via ``LINKEDIN_EXTRACTOR``:
-  - ``httpx``  (default) — requests + BeautifulSoup body extraction.
-  - ``tavily`` — Tavily Extract API; handles JS-rendered / Cloudflare-gated
-    pages the httpx backend can't. Falls back to httpx if ``TAVILY_API_KEY``
-    isn't configured. See ``TAVILY_EXTRACT_DEPTH`` (basic|advanced).
+  - ``tavily`` (default) — Tavily Extract API; handles JS-rendered /
+    Cloudflare-gated pages. Falls back to httpx if ``TAVILY_API_KEY`` isn't
+    configured. See ``TAVILY_EXTRACT_DEPTH`` (basic|advanced).
+  - ``httpx`` — requests + BeautifulSoup body extraction.
 Metadata-only for YouTube/GitHub/podcasts regardless of backend. arXiv and
 X/Twitter status URLs are special-cased regardless of backend (see
 ``_fetch_arxiv`` / ``_fetch_x_status``).
@@ -534,14 +534,15 @@ SKIP_TYPES: frozenset[str] = frozenset(
 
 
 def _extractor_backend() -> str:
-    """Resolve ``LINKEDIN_EXTRACTOR`` (default ``httpx``).
+    """Resolve ``LINKEDIN_EXTRACTOR`` (default ``tavily``).
 
-    Falls back to ``httpx`` with a warning when ``tavily`` is selected but no
-    ``TAVILY_API_KEY`` is configured, so the pipeline keeps working without it.
+    Falls back to ``httpx`` with a warning when ``tavily`` is selected (or is
+    the default) but no ``TAVILY_API_KEY`` is configured, so the pipeline keeps
+    working without a key.
     """
-    backend = os.environ.get("LINKEDIN_EXTRACTOR", "httpx").strip().lower()
+    backend = os.environ.get("LINKEDIN_EXTRACTOR", "tavily").strip().lower()
     if backend not in _BODY_BACKENDS:
-        backend = "httpx"
+        backend = "tavily"
     if backend == "tavily" and not _tavily_api_key():
         logger.warning(
             "LINKEDIN_EXTRACTOR=tavily but no TAVILY_API_KEY configured "
