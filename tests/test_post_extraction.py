@@ -217,13 +217,17 @@ def test_extract_promotes_urls_from_markdown_body_when_dom_misses_anchors():
     """Trafilatura-kept links must still land in ext.urls for linked-resource fetch."""
     from linkedin_api.post_extraction import extract_post_from_html
 
-    html = """
+    desc = (
+        "A few truths still hold up for data leaders about "
+        "agentic analytics and documentation."
+    )
+    html = f"""
     <html><head>
-      <meta property="og:description" content="A few truths still hold up for data leaders about agentic analytics and documentation."/>
+      <meta property="og:description" content="{desc}"/>
       <meta property="og:title" content="Self-Service Analytics"/>
     </head><body>
       <article>
-        <p>A few truths still hold up for data leaders about agentic analytics and documentation.
+        <p>{desc}
         <a href="https://lnkd.in/eFEpsGFn">https://lnkd.in/eFEpsGFn</a></p>
       </article>
     </body></html>
