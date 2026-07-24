@@ -1386,7 +1386,8 @@ class TestCitedByUrnNormalization:
 
 
 class TestIsExportableResource:
-    def test_rejects_repository_metadata_only(self):
+    def test_rejects_empty_body(self):
+        """Metadata-only types (repo/video/podcast) land here with empty content."""
         from linkedin_api.fetch_linked_content import is_exportable_resource
 
         assert not is_exportable_resource(
