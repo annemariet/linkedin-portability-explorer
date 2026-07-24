@@ -211,3 +211,25 @@ def test_strip_trafilatura_comments_fallback_on_empty_result():
     md = "Only [comment](https://linkedin.com/in/x?trk=public_post_comment-text) content."
     result = _strip_trafilatura_comments(md)
     assert result == md
+
+
+def test_extract_promotes_urls_from_markdown_body_when_dom_misses_anchors():
+    """Trafilatura-kept links must still land in ext.urls for linked-resource fetch."""
+    from linkedin_api.post_extraction import extract_post_from_html
+
+    html = """
+    <html><head>
+      <meta property="og:description" content="A few truths still hold up for data leaders about agentic analytics and documentation."/>
+      <meta property="og:title" content="Self-Service Analytics"/>
+    </head><body>
+      <article>
+        <p>A few truths still hold up for data leaders about agentic analytics and documentation.
+        <a href="https://lnkd.in/eFEpsGFn">https://lnkd.in/eFEpsGFn</a></p>
+      </article>
+    </body></html>
+    """
+    ext = extract_post_from_html(
+        html, "https://www.linkedin.com/feed/update/urn:li:activity:1"
+    )
+    assert ext is not None
+    assert any("lnkd.in/eFEpsGFn" in u for u in ext.urls)
