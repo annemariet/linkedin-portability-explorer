@@ -1,3 +1,5 @@
+"""Tests for HTML → markdown body extraction."""
+
 from __future__ import annotations
 
 from bs4 import BeautifulSoup
@@ -17,6 +19,25 @@ def test_extract_html_preserves_inline_code_in_paragraph():
         text
         == "Accented characters like `é` may be escaped in JSON as `\\u00e9`. So `é` cannot form."
     )
+
+
+def test_decorative_hash_in_h2_does_not_double_hash():
+    soup = BeautifulSoup(
+        "<html><body><h2>#How it works</h2><p>Body.</p></body></html>",
+        "html.parser",
+    )
+    text = extract_html_body_text(soup)
+    assert "## How it works" in text
+    assert "## #How" not in text
+
+
+def test_normal_h2_unchanged():
+    soup = BeautifulSoup(
+        "<html><body><h2>How it works</h2></body></html>",
+        "html.parser",
+    )
+    text = extract_html_body_text(soup)
+    assert "## How it works" in text
 
 
 def test_x_article_blocks_to_text_flattens_paragraphs():

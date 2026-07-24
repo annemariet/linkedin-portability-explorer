@@ -28,6 +28,8 @@ _BLOCK_TAGS = frozenset(
 )
 _CHROME_TAGS = ("script", "style", "nav", "header", "footer", "aside")
 _COLLAPSE_WS = re.compile(r"[ \t]+")
+# Decorative hash in heading text (e.g. Cursor blog "<h2>#How it works</h2>").
+_DECORATIVE_HASH_HEADING = re.compile(r"^#+(?=\S)")
 
 
 def _render_inline(element: Any) -> str:
@@ -56,15 +58,20 @@ def _normalize_block(text: str, *, preserve_newlines: bool = False) -> str:
 
 
 def _heading_prefix(tag_name: str, text: str) -> str:
+    # Strip decorative leading "#" without a space ("#How" → "How") so we do not
+    # emit broken ATX like "## #How it works".
+    cleaned = _DECORATIVE_HASH_HEADING.sub("", (text or "").strip()).strip()
+    if not cleaned:
+        cleaned = (text or "").strip()
     if tag_name == "h1":
-        return f"# {text}"
+        return f"# {cleaned}"
     if tag_name == "h2":
-        return f"## {text}"
+        return f"## {cleaned}"
     if tag_name == "h3":
-        return f"### {text}"
+        return f"### {cleaned}"
     if tag_name in {"h4", "h5", "h6"}:
-        return f"#### {text}"
-    return text
+        return f"#### {cleaned}"
+    return cleaned
 
 
 def extract_html_body_text(soup: BeautifulSoup) -> str:
