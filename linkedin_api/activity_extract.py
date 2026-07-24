@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional
 
 from linkedin_api.activity_csv import (
@@ -34,9 +34,14 @@ POST_RELATED_RESOURCES = [
 
 
 def format_timestamp(timestamp: int | None) -> str | None:
+    """Format LinkedIn epoch-ms as UTC ISO-8601 (``...+00:00``).
+
+    Must not use naive local time: ``filter_by_date`` treats naive ``created_at``
+    as UTC, which drops recent rows for non-UTC machines (local clock ahead).
+    """
     if not timestamp:
         return None
-    return datetime.fromtimestamp(timestamp / 1000).isoformat()
+    return datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc).isoformat()
 
 
 def _get_activity_timestamp(element: dict, activity: dict) -> int | None:

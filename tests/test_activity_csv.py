@@ -239,6 +239,20 @@ class TestFilterByDate:
         result = filter_by_date([rec])
         assert len(result) == 0
 
+    def test_prefers_epoch_time_over_naive_local_created_at(self):
+        """Naive created_at ahead of UTC must not drop a row with correct time ms."""
+        # 2026-07-24 14:41:56 UTC — created_at wrongly stored as local (+2h) naive
+        rec = ActivityRecord(
+            activity_urn="urn:li:activity:7486048147157262338",
+            post_id="7486048147157262338",
+            time="1784904116421",
+            created_at="2026-07-24T16:41:56.421000",
+        )
+        end = datetime.fromisoformat("2026-07-24T15:00:00+00:00")
+        start = datetime.fromisoformat("2026-07-23T15:00:00+00:00")
+        result = filter_by_date([rec], start=start, end=end)
+        assert [r.post_id for r in result] == ["7486048147157262338"]
+
     def test_mixed_naive_and_aware_datetimes(self):
         records = [
             ActivityRecord(activity_urn="urn:a", created_at="2023-11-14T22:13:20"),

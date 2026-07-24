@@ -254,9 +254,11 @@ def filter_by_date(
     start: datetime | None = None,
     end: datetime | None = None,
 ) -> list[ActivityRecord]:
-    """Filter records by date range using the ``created_at`` ISO field.
+    """Filter records by date range (inclusive). Prefer ``time`` (epoch ms).
 
-    Both *start* and *end* are inclusive.  ``None`` means unbounded.
+    ``created_at`` is a fallback for legacy rows. Preferring ``time`` avoids
+    dropping recent activity when ``created_at`` was written as naive local time
+    and then interpreted as UTC.
     """
 
     def _as_utc(dt: datetime) -> datetime:
@@ -265,15 +267,26 @@ def filter_by_date(
             return dt.replace(tzinfo=UTC)
         return dt.astimezone(UTC)
 
+    def _record_dt(rec: ActivityRecord) -> datetime | None:
+        raw_time = (rec.time or "").strip()
+        if raw_time:
+            try:
+                return datetime.fromtimestamp(int(raw_time) / 1000, tz=UTC)
+            except (TypeError, ValueError, OSError, OverflowError):
+                pass
+        if not rec.created_at:
+            return None
+        try:
+            return _as_utc(datetime.fromisoformat(rec.created_at))
+        except (ValueError, TypeError):
+            return None
+
     start_cmp = _as_utc(start) if start else None
     end_cmp = _as_utc(end) if end else None
     result: list[ActivityRecord] = []
     for rec in records:
-        if not rec.created_at:
-            continue
-        try:
-            dt = _as_utc(datetime.fromisoformat(rec.created_at))
-        except (ValueError, TypeError):
+        dt = _record_dt(rec)
+        if dt is None:
             continue
         if start_cmp and dt < start_cmp:
             continue

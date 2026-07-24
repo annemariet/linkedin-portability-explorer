@@ -354,6 +354,13 @@ def extract_post_from_html(html: str, final_url: str) -> PostExtractionResult | 
         md_tf = _strip_trafilatura_comments(md_tf)
     body = md_tf if (md_tf and len(md_tf) >= 50) else plain
 
+    # Trafilatura often keeps links that the guest DOM walk misses (no body root /
+    # anchors outside find_post_body_root). Promote URLs from the body text so
+    # meta.urls drives linked-resource fetch.
+    urls, mentions, hashtags = merge_classification_with_api(
+        urls, mentions, hashtags, extract_urls_from_text(body)
+    )
+
     return PostExtractionResult(
         markdown_body=body,
         html_meta=html_meta,
