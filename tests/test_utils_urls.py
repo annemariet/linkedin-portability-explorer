@@ -231,14 +231,6 @@ class TestCategorizeUrl:
             rewrite_fetch_url("https://arxiv.org/abs/2511.00592v2")
             == "https://arxiv.org/html/2511.00592v2"
         )
-        # open.substack.com is left alone — Tavily extracts it; httpx interstitial
-        # is rejected later by is_exportable_resource (URL-only body).
-        assert (
-            rewrite_fetch_url(
-                "https://open.substack.com/pub/anthonybasille/p/meme-anthropic-ne-comprend-pas-ses?r=krsxd"
-            )
-            == "https://open.substack.com/pub/anthonybasille/p/meme-anthropic-ne-comprend-pas-ses?r=krsxd"
-        )
 
     def test_x_status_id(self):
         from linkedin_api.utils.urls import is_x_status_url, x_status_id

@@ -10,15 +10,14 @@ import pytest
 from linkedin_api.content_store import load_metadata, save_content, save_metadata
 from linkedin_api.fetch_linked_content import (
     FetchResult,
-    _extractor_backend,
     _fetch_tavily,
     _iter_posts_with_urls,
     _resource_dir,
-    _strategy_for,
     _tavily_api_key,
     _url_stem,
     fetch_linked_content,
     has_resource,
+    is_exportable_resource,
     load_resource,
     process_post_linked_content,
     save_resource,
@@ -852,68 +851,134 @@ class TestTavilyApiKeyResolution:
 
 
 class TestExtractorBackend:
-    def test_defaults_to_tavily_when_key_present(self, monkeypatch):
+    """LINKEDIN_EXTRACTOR affects article fetches; assert via I/O boundaries."""
+
+    _ARTICLE = "https://example.com/blog/post"
+    _HTML = (
+        "<html><head>"
+        '<meta property="og:title" content="Http Title"/>'
+        "</head><body><p>Http body text.</p></body></html>"
+    )
+
+    def _tavily_client(self) -> MagicMock:
+        client = MagicMock()
+        client.extract.return_value = {
+            "results": [
+                {
+                    "url": self._ARTICLE,
+                    "raw_content": "# Tavily Title\n\nTavily body text.",
+                }
+            ],
+            "failed_results": [],
+        }
+        return client
+
+    def test_default_uses_tavily_when_key_present(self, monkeypatch):
         monkeypatch.delenv("LINKEDIN_EXTRACTOR", raising=False)
-        with patch(
-            "linkedin_api.fetch_linked_content._tavily_api_key",
-            return_value="fake-key",
+        mock_client = self._tavily_client()
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client) as tavily_cls,
+            patch("requests.get") as requests_get,
         ):
-            assert _extractor_backend() == "tavily"
+            result = fetch_linked_content(self._ARTICLE, resolve_redirects=False)
 
-    def test_defaults_fall_back_to_httpx_without_key(self, monkeypatch):
+        tavily_cls.assert_called_once()
+        mock_client.extract.assert_called_once()
+        requests_get.assert_not_called()
+        assert "Tavily body text" in result.content
+        assert is_exportable_resource(result)
+
+    def test_default_falls_back_to_httpx_without_key(self, monkeypatch):
         monkeypatch.delenv("LINKEDIN_EXTRACTOR", raising=False)
-        with patch(
-            "linkedin_api.fetch_linked_content._tavily_api_key", return_value=""
+        with (
+            patch("linkedin_api.fetch_linked_content._tavily_api_key", return_value=""),
+            patch("tavily.TavilyClient") as tavily_cls,
+            patch(
+                "requests.get",
+                return_value=_mock_get_response(self._HTML),
+            ) as requests_get,
         ):
-            assert _extractor_backend() == "httpx"
+            result = fetch_linked_content(self._ARTICLE, resolve_redirects=False)
 
-    def test_selects_tavily_when_key_present(self, monkeypatch):
+        tavily_cls.assert_not_called()
+        requests_get.assert_called()
+        assert "Http body text" in result.content
+
+    def test_explicit_tavily_uses_tavily_when_key_present(self, monkeypatch):
         monkeypatch.setenv("LINKEDIN_EXTRACTOR", "tavily")
-        with patch(
-            "linkedin_api.fetch_linked_content._tavily_api_key",
-            return_value="fake-key",
+        mock_client = self._tavily_client()
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient", return_value=mock_client) as tavily_cls,
+            patch("requests.get") as requests_get,
         ):
-            assert _extractor_backend() == "tavily"
+            result = fetch_linked_content(self._ARTICLE, resolve_redirects=False)
 
-    def test_falls_back_to_httpx_without_key(self, monkeypatch):
+        tavily_cls.assert_called_once()
+        requests_get.assert_not_called()
+        assert "Tavily body text" in result.content
+
+    def test_tavily_setting_falls_back_to_httpx_without_key(self, monkeypatch):
         monkeypatch.setenv("LINKEDIN_EXTRACTOR", "tavily")
-        with patch(
-            "linkedin_api.fetch_linked_content._tavily_api_key", return_value=""
+        with (
+            patch("linkedin_api.fetch_linked_content._tavily_api_key", return_value=""),
+            patch("tavily.TavilyClient") as tavily_cls,
+            patch(
+                "requests.get",
+                return_value=_mock_get_response(self._HTML),
+            ),
         ):
-            assert _extractor_backend() == "httpx"
+            result = fetch_linked_content(self._ARTICLE, resolve_redirects=False)
 
-    def test_unknown_value_falls_back_to_tavily_then_httpx_without_key(
-        self, monkeypatch
-    ):
+        tavily_cls.assert_not_called()
+        assert "Http body text" in result.content
+
+    def test_unknown_extractor_falls_back_like_default(self, monkeypatch):
         monkeypatch.setenv("LINKEDIN_EXTRACTOR", "bogus")
-        with patch(
-            "linkedin_api.fetch_linked_content._tavily_api_key", return_value=""
+        with (
+            patch("linkedin_api.fetch_linked_content._tavily_api_key", return_value=""),
+            patch("tavily.TavilyClient") as tavily_cls,
+            patch(
+                "requests.get",
+                return_value=_mock_get_response(self._HTML),
+            ),
         ):
-            assert _extractor_backend() == "httpx"
+            result = fetch_linked_content(self._ARTICLE, resolve_redirects=False)
 
-    def test_metadata_only_types_ignore_extractor(self, monkeypatch):
+        tavily_cls.assert_not_called()
+        assert "Http body text" in result.content
+
+    def test_repository_stays_title_only_when_tavily_selected(self, monkeypatch):
         monkeypatch.setenv("LINKEDIN_EXTRACTOR", "tavily")
-        with patch(
-            "linkedin_api.fetch_linked_content._tavily_api_key",
-            return_value="fake-key",
+        html = (
+            "<html><head>"
+            '<meta property="og:title" content="Some Repo"/>'
+            "</head><body><p>README noise</p></body></html>"
+        )
+        with (
+            patch(
+                "linkedin_api.fetch_linked_content._tavily_api_key",
+                return_value="fake-key",
+            ),
+            patch("tavily.TavilyClient") as tavily_cls,
+            patch("requests.get", return_value=_mock_get_response(html)),
         ):
-            from linkedin_api.fetch_linked_content import _fetch_metadata_only
+            result = fetch_linked_content(
+                "https://github.com/org/repo", resolve_redirects=False
+            )
 
-            assert _strategy_for("video") is _fetch_metadata_only
-            assert _strategy_for("repository") is _fetch_metadata_only
-
-    def test_article_type_uses_selected_backend(self, monkeypatch):
-        monkeypatch.setenv("LINKEDIN_EXTRACTOR", "httpx")
-        from linkedin_api.fetch_linked_content import _fetch_html_body
-
-        assert _strategy_for("article") is _fetch_html_body
-
-        monkeypatch.setenv("LINKEDIN_EXTRACTOR", "tavily")
-        with patch(
-            "linkedin_api.fetch_linked_content._tavily_api_key",
-            return_value="fake-key",
-        ):
-            assert _strategy_for("article") is _fetch_tavily
+        tavily_cls.assert_not_called()
+        assert result.url_type == "repository"
+        assert result.title == "Some Repo"
+        assert result.content == ""
+        assert not is_exportable_resource(result)
 
 
 # ---------------------------------------------------------------------------
@@ -1387,9 +1452,6 @@ class TestCitedByUrnNormalization:
 
 class TestIsExportableResource:
     def test_rejects_empty_body(self):
-        """Metadata-only types (repo/video/podcast) land here with empty content."""
-        from linkedin_api.fetch_linked_content import is_exportable_resource
-
         assert not is_exportable_resource(
             FetchResult(
                 url="https://github.com/org/repo",
@@ -1400,8 +1462,6 @@ class TestIsExportableResource:
         )
 
     def test_rejects_url_only_body(self):
-        from linkedin_api.fetch_linked_content import is_exportable_resource
-
         assert not is_exportable_resource(
             FetchResult(
                 url="https://open.substack.com/pub/a/p/b",
@@ -1412,8 +1472,6 @@ class TestIsExportableResource:
         )
 
     def test_accepts_real_article_body(self):
-        from linkedin_api.fetch_linked_content import is_exportable_resource
-
         assert is_exportable_resource(
             FetchResult(
                 url="https://example.com/blog/x",

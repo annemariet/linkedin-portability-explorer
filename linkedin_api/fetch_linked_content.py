@@ -148,12 +148,7 @@ _BINARY_CONTENT_MARKERS = ("%PDF-", "\x89PNG")
 
 
 def is_exportable_resource(result: FetchResult) -> bool:
-    """Skip binary PDFs, errors, and title/URL-only noise from vault export.
-
-    Video / repository / podcast never reach here with a body: ``_strategy_for``
-    routes them to ``_fetch_metadata_only`` (empty content). Empty body alone
-    rejects those; this gate focuses on failed extracts (URL-only interstitial).
-    """
+    """Skip binary PDFs, errors, empty bodies, and URL-only interstitial noise."""
     if result.error:
         return False
     body = (result.content or "").strip()
