@@ -8,8 +8,8 @@ Python client for LinkedIn's Portability API — fetches activity, builds a Neo4
 
 ### Cursor skills for this project
 
-- **`github-use`** (`.cursor/skills/github-use/SKILL.md`): Git and GitHub workflow – feature branches and PRs only, small focused gitmoji-style commits, and always run format, lint, and tests before committing (never force-push).
-- **`linear-use`** (`.cursor/skills/linear-use/SKILL.md`): Linear workflow – include ticket IDs in branches and PRs, keep ticket status in sync (in progress → in review → done), and start each ticket with a short implementation plan posted to Linear.
+- **`github-use`** (`.cursor/skills/github-use/SKILL.md`): **Pointer only** — follow [amai-lab github-use](https://github.com/annemariet/amai-lab/blob/main/skills/github-use/SKILL.md) (gitmoji + `(scope)` PR titles, feature branches, never push/merge `main`). Repo-specific pre-push checks and LinkedIn validation: `AGENTS.md` below and `.cursor/skills/github-use/validation.md`.
+- **`linear-use`**: **Quarantined stub** — do not use for git/PR policy here. Task tracking for this repo is **GitHub issues/PRs**; amai-lab work uses **Beads** (see amai-lab), not Linear rules from this repo.
 - **`gradio-pages`** (`.cursor/skills/gradio-pages/SKILL.md`): Gradio UI design – never block the first paint, keep one expensive operation per explicit action, use `gr.State` for UI state, and add logging so long-running steps stay observable.
 
 ### Running services
@@ -32,21 +32,22 @@ All commands use `uv run` as the project manages dependencies with `uv`. See `CL
 | Format check | `uv run black --check .` |
 | Lint | `uv run flake8 linkedin_api tests examples *.py` |
 | Type check | `uv run mypy linkedin_api` (non-blocking; pre-existing errors) |
-| Gradio app | `uv run python -m linkedin_api.gradio_app` |
+| Gradio app | `uv run python -m linkedin_api.gradio_app |
 
 ### Git & PR workflow
 
-- **Commits**: commit after each individual change, using gitmojis comments (see https://gitmoji.dev/).
-- **Push destination**: After committing, push to the current branch (e.g. `cursor/model-selection-by-stage-0735`). If you need a specific branch for review, it will be stated in the task.
-- **PR title format**: Use `[TICKET-XX] Title` (e.g. `[LUC-60] Single pass posts report`) when the work is tied to a Linear ticket.
-- **PR comments**: Always address review comments on the PR. Fetch them with `gh api repos/annemariet/linkedin-portability-explorer/pulls/<number>/comments` if needed.
+Follow **[amai-lab github-use](https://github.com/annemariet/amai-lab/blob/main/skills/github-use/SKILL.md)** (e.g. PR titles like `📝 (linkedin) Short description`, feature branches only, never push/merge `main`).
+
+- **Commits**: small, focused; gitmoji + conventional commits (see https://gitmoji.dev/ and `CLAUDE.md`).
+- **Before pushing**: run `black --check`, `flake8`, `mypy linkedin_api`, and `pytest` for the change scope; fix failures or call them out in the PR.
+- **PR comments**: address review feedback; fetch threads with `gh api repos/annemariet/linkedin-portability-explorer/pulls/<number>/comments` when needed.
+- **LinkedIn pipeline changes**: add a Validation section per `.cursor/skills/github-use/validation.md` when real-token runs are possible.
 
 ### Gotchas
 
 - **mypy must pass clean** (`uv run mypy linkedin_api`). All three linters (`black`, `flake8`, `mypy`) must pass before committing.
 - **`uv` must be on PATH**: install with `curl -LsSf https://astral.sh/uv/install.sh | sh` and ensure `$HOME/.local/bin` is on PATH.
-- **Commits**: Use conventional commits with gitmoji (see `CLAUDE.md`).
-- **Before pushing**: Always run the checks above for the change you just made; only push once everything is green, and ensure you are on the correct feature branch (including the ticket id in the branch name when working on a Linear ticket).
+- **Before pushing**: only push once checks are green on the correct **feature** branch (never `main`).
 - **Python 3.12+** is required (`requires-python = ">=3.12"` in `pyproject.toml`).
 - If pipeline/report fails with `Cannot connect to Ollama` or `model ... not found`, verify `ollama list` shows `llama3.2:3b` and `nomic-embed-text`.
 - **zstd** is pre-installed as a system dependency (used by Ollama for model compression).
