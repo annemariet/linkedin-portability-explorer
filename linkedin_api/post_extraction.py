@@ -20,7 +20,6 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from linkedin_api.content_store import (
-    download_image_to_store,
     resolve_urls_for_metadata,
     save_comments,
     save_content,
@@ -45,7 +44,7 @@ from linkedin_api.utils.urls import (
 )
 
 # Increment when DOM classification, markdown conversion, or metadata shape changes.
-ENRICHMENT_VERSION = 3
+ENRICHMENT_VERSION = 4
 
 
 def _strip_trafilatura_comments(md: str) -> str:
@@ -305,11 +304,11 @@ def save_extraction_to_store(
     meta_urls = resolve_urls_for_metadata(u)
     body = append_missing_resource_urls(ext.markdown_body, meta_urls)
 
-    # Download the first image and embed it in the markdown body.
+    # Embed the first post image by CDN URL (no local content/images/ at enrich).
     if ext.image_urls:
-        local_img = download_image_to_store(ext.image_urls[0])
-        if local_img:
-            body = body.rstrip() + f"\n\n![]({local_img})"
+        cdn_url = (ext.image_urls[0] or "").strip()
+        if cdn_url:
+            body = body.rstrip() + f"\n\n![]({cdn_url})"
 
     save_content(post_id, body, post_urn=post_urn)
     save_metadata(

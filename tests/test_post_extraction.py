@@ -237,3 +237,39 @@ def test_extract_promotes_urls_from_markdown_body_when_dom_misses_anchors():
     )
     assert ext is not None
     assert any("lnkd.in/eFEpsGFn" in u for u in ext.urls)
+
+
+def test_save_extraction_embeds_cdn_url_not_local_image(tmp_path, monkeypatch):
+    """Sidecars use CDN in markdown + meta; no content/images/ download at enrich."""
+    monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
+    from linkedin_api.content_store import load_content, load_metadata
+    from linkedin_api.post_extraction import PostExtractionResult, save_extraction_to_store
+
+    cdn = "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
+    ext = PostExtractionResult(
+        markdown_body="Post body text.",
+        html_meta={},
+        urls=[],
+        mentions=[],
+        hashtags=[],
+        image_urls=[cdn],
+    )
+    save_extraction_to_store(
+        post_id="12345",
+        post_urn="urn:li:activity:1",
+        post_url="https://www.linkedin.com/feed/update/urn:li:activity:1",
+        ext=ext,
+        urls_from_api=[],
+        activity_time_iso="2026-01-01T00:00:00Z",
+        post_created="2026-01-01T00:00:00Z",
+        activities_ids=["act-1"],
+    )
+    body = load_content("12345", post_urn="urn:li:activity:1")
+    assert body is not None
+    assert f"![]({cdn})" in body
+    assert "images/" not in body
+    meta = load_metadata("12345", post_urn="urn:li:activity:1")
+    assert meta is not None
+    assert meta.get("images") == [cdn]
+    images_dir = tmp_path / "content" / "images"
+    assert not images_dir.is_dir() or not any(images_dir.iterdir())
