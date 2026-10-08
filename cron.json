@@ -1,0 +1,7 @@
+{
+  "jobs": [
+    {
+      "command": "0 8 * * * uv run linkedin-check-token --warn-exit-code"
+    }
+  ]
+}

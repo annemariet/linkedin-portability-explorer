@@ -9,6 +9,7 @@ import dotenv
 dotenv.load_dotenv()
 
 from linkedin_api.gradio_pipeline_ui import create_pipeline_interface
+from linkedin_api.utils.token_health import log_startup_token_health
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,6 +20,12 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    probe = os.getenv("LINKEDIN_TOKEN_PROBE_ON_STARTUP", "").strip() in (
+        "1",
+        "true",
+        "yes",
+    )
+    log_startup_token_health(probe_api=probe)
     demo = create_pipeline_interface()
     port = int(os.getenv("PORT", 7860))
     host = os.getenv("HOST", "0.0.0.0")
