@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -408,6 +409,11 @@ class TestShortUrlResolution:
     def test_real_lnkd_in_resolves_and_classifies(self):
         """Live: https://lnkd.in/erbBvi7E resolves via LinkedIn interstitial page
         to presse.economie.gouv.fr and is classified + fetched as an article."""
+        if os.getenv("LINKEDIN_TEST_ONLINE") != "1":
+            pytest.skip(
+                "Set LINKEDIN_TEST_ONLINE=1 for live lnkd.in redirect + article fetch."
+            )
+
         result = fetch_linked_content(
             "https://lnkd.in/erbBvi7E", resolve_redirects=True
         )
