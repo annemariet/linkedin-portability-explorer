@@ -243,7 +243,10 @@ def test_save_extraction_embeds_cdn_url_not_local_image(tmp_path, monkeypatch):
     """Sidecars use CDN in markdown + meta; no content/images/ download at enrich."""
     monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
     from linkedin_api.content_store import load_content, load_metadata
-    from linkedin_api.post_extraction import PostExtractionResult, save_extraction_to_store
+    from linkedin_api.post_extraction import (
+        PostExtractionResult,
+        save_extraction_to_store,
+    )
 
     cdn = "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
     ext = PostExtractionResult(
