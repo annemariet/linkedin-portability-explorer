@@ -20,7 +20,6 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from linkedin_api.content_store import (
-    download_image_to_store,
     load_content,
     load_metadata,
     resolve_urls_for_metadata,
@@ -28,11 +27,7 @@ from linkedin_api.content_store import (
     save_content,
     save_metadata,
 )
-from linkedin_api.activity_csv import get_data_dir
-from linkedin_api.post_images import (
-    apply_post_image_sidecar,
-    enrichment_version_after_images,
-)
+from linkedin_api.post_images import apply_post_image_sidecar
 from linkedin_api.utils.post_html import (
     find_post_body_root,
     linkedin_http_fetch_is_blocked,
@@ -52,7 +47,7 @@ from linkedin_api.utils.urls import (
 )
 
 # Increment when DOM classification, markdown conversion, or metadata shape changes.
-ENRICHMENT_VERSION = 4
+ENRICHMENT_VERSION = 3
 
 
 def _strip_trafilatura_comments(md: str) -> str:
@@ -314,30 +309,14 @@ def save_extraction_to_store(
     existing_body = load_content(post_id, post_urn=post_urn)
     existing_meta = load_metadata(post_id, post_urn=post_urn) or {}
     prev_images = existing_meta.get("images")
-    body, images_meta, pipeline_complete = apply_post_image_sidecar(
+    body, images_meta = apply_post_image_sidecar(
         body,
         ext.image_urls,
         existing_body=existing_body,
         existing_images=prev_images if isinstance(prev_images, list) else None,
-        download=download_image_to_store,
     )
 
     save_content(post_id, body, post_urn=post_urn)
-    content_root = get_data_dir() / "content"
-    try:
-        prior_version = int(existing_meta.get("enrichment_version") or 0)
-    except (TypeError, ValueError):
-        prior_version = ENRICHMENT_VERSION - 1
-    if prior_version <= 0:
-        prior_version = ENRICHMENT_VERSION - 1
-    enrichment_version = enrichment_version_after_images(
-        images_meta,
-        body,
-        content_root,
-        target_version=ENRICHMENT_VERSION,
-        prior_version=prior_version,
-        image_pipeline_complete=pipeline_complete,
-    )
     save_metadata(
         post_id,
         urls=meta_urls,
@@ -351,7 +330,7 @@ def save_extraction_to_store(
         post_created_at=post_created,
         post_urn=post_urn,
         activities_ids=activities_ids,
-        enrichment_version=enrichment_version,
+        enrichment_version=ENRICHMENT_VERSION,
     )
     if ext.comments:
         save_comments(post_id, ext.comment_count, ext.comments, post_urn=post_urn)

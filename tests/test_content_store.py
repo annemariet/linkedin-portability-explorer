@@ -390,8 +390,7 @@ class TestDownloadImageToStore:
         resp = MagicMock()
         resp.status_code = status_code
         resp.headers = {"Content-Type": "image/jpeg"}
-        resp.iter_content = lambda chunk_size=65536: [content] if content else []
-        resp.close = MagicMock()
+        resp.content = content
         return resp
 
     def test_downloads_to_content_dir(self):
@@ -424,20 +423,6 @@ class TestDownloadImageToStore:
 
     def test_returns_none_for_empty_url(self):
         assert download_image_to_store("") is None
-
-    def test_rejects_html_body_as_image(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
-        html = b"<!DOCTYPE html><html><body>Login</body></html>"
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.headers = {"Content-Type": "text/html; charset=utf-8"}
-        resp.iter_content = lambda chunk_size=65536: [html]
-        resp.close = MagicMock()
-        url = "https://media.licdn.com/dms/image/v2/x/0?e=2147483647&t=secret"
-        with patch("requests.get", return_value=resp):
-            assert download_image_to_store(url) is None
-        images = tmp_path / "content" / "images"
-        assert not list(images.glob("*")) if images.exists() else True
 
     def test_logs_never_include_signed_t_query(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))

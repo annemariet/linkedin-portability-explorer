@@ -1,11 +1,9 @@
-"""Post image sidecars: local ``content/images/`` + CDN metadata (fallback only)."""
+"""Post image sidecars: CDN embeds in markdown + metadata (no enrich-time download)."""
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import re
-from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,12 +12,14 @@ from urllib.parse import parse_qs, urlparse
 logger = logging.getLogger(__name__)
 
 LOCAL_IMAGE_EMBED_RE = re.compile(r"!\[[^\]]*\]\((images/[^)>\s]+)\)")
-CDN_URL_IN_MARKDOWN_RE = re.compile(
-    r"!\[[^\]]*\]\((https://media\.licdn\.com/[^)>\s]+)\)"
-)
+HTTPS_IMAGE_EMBED_RE = re.compile(r"!\[[^\]]*\]\((https://[^)>\s]+)\)")
 
 CDN_EXPIRY_CLOCK_SKEW_SECONDS = 60.0
-_LINKEDIN_MEDIA_HOST_SUFFIX = ".licdn.com"
+
+# Fixture URL for tests (``e=`` decodes to 1780668000 — expired vs 2026-10-09).
+EXPIRED_CDN_FIXTURE_URL = (
+    "https://media.licdn.com/dms/image/v2/fixture/0?e=1780668000&v=beta&t=fixture"
+)
 
 
 def parse_linkedin_cdn_expires_at_unix(url: str) -> int | None:
@@ -63,52 +63,36 @@ def cdn_url_is_expired(url: str, *, now: datetime | None = None) -> bool:
     return ref.timestamp() >= float(ts) - CDN_EXPIRY_CLOCK_SKEW_SECONDS
 
 
-def legacy_v3_image_rel(full_url: str) -> str:
-    """v3 on-disk name: ``sha256(full signed URL)`` (same rules as pre-v4 enrich)."""
-    url = (full_url or "").strip()
-    url_hash = hashlib.sha256(url.encode()).hexdigest()[:24]
-    parsed = urlparse(url)
-    suffix = Path(parsed.path).suffix.lower()
-    if suffix not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
-        suffix = ".jpg"
-    return f"images/{url_hash}{suffix}"
-
-
-def image_magic_suffix(content: bytes) -> str | None:
-    if content.startswith(b"\xff\xd8\xff"):
-        return ".jpg"
-    if content.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
-    if content.startswith(b"GIF87a") or content.startswith(b"GIF89a"):
-        return ".gif"
-    if len(content) >= 12 and content[0:4] == b"RIFF" and content[8:12] == b"WEBP":
-        return ".webp"
-    return None
-
-
-def is_image_content(content: bytes, content_type: str) -> bool:
-    if image_magic_suffix(content):
+def is_linkedin_generic_placeholder_image(url: str) -> bool:
+    """LinkedIn UI placeholders ('Posted on LinkedIn' / static assets), not post photos."""
+    parsed = urlparse((url or "").strip())
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
+    if host == "static.licdn.com":
         return True
-    ct = (content_type or "").split(";", 1)[0].strip().lower()
-    return ct.startswith("image/")
+    if "/scds/common/u/" in path:
+        return True
+    if "ghost" in path and "image" in path:
+        return True
+    return False
 
 
-def image_suffix_for_valid_content(content: bytes, content_type: str) -> str | None:
-    """Pick extension from magic bytes first, then ``image/*`` Content-Type."""
-    magic = image_magic_suffix(content)
-    if magic:
-        return magic
-    ct = (content_type or "").split(";", 1)[0].strip().lower()
-    by_ct = {
-        "image/jpeg": ".jpg",
-        "image/jpg": ".jpg",
-        "image/png": ".png",
-        "image/gif": ".gif",
-        "image/webp": ".webp",
-    }
-    if ct in by_ct:
-        return by_ct[ct]
-    return None
+def filter_post_image_urls(urls: list[str]) -> list[str]:
+    """De-duplicated HTTPS image URLs by path identity (placeholders excluded)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in urls:
+        url = (raw or "").strip()
+        if not url.startswith("https://"):
+            continue
+        if is_linkedin_generic_placeholder_image(url):
+            continue
+        ident = cdn_url_identity(url)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        out.append(url)
+    return out
 
 
 def image_meta_record(
@@ -117,7 +101,10 @@ def image_meta_record(
     local_path: str | None = None,
 ) -> dict[str, Any]:
     url = (cdn_url or "").strip()
+    ident = cdn_url_identity(url) if url.startswith("http") else ""
     rec: dict[str, Any] = {"cdn_url": url}
+    if ident:
+        rec["identity"] = ident
     expires = cdn_expires_at_iso(url)
     if expires:
         rec["cdn_expires_at"] = expires
@@ -141,10 +128,21 @@ def _entry_local_path(entry: Any) -> str:
     return ""
 
 
-def _meta_merge_key(entry: Any) -> str:
+def _entry_identity(entry: Any) -> str:
+    if isinstance(entry, dict):
+        stored = str(entry.get("identity") or "").strip()
+        if stored:
+            return stored
     cdn = _entry_cdn_url(entry)
     if cdn.startswith("http"):
         return cdn_url_identity(cdn)
+    return ""
+
+
+def _meta_merge_key(entry: Any) -> str:
+    ident = _entry_identity(entry)
+    if ident:
+        return ident
     local = _entry_local_path(entry)
     if local:
         return f"local:{local}"
@@ -162,6 +160,7 @@ def normalize_image_meta_list(images: Any) -> list[dict[str, Any]]:
             rec = dict(item)
             if cdn:
                 rec.setdefault("cdn_url", cdn)
+                rec.setdefault("identity", cdn_url_identity(cdn))
             if local:
                 rec.setdefault("local_path", local)
             if "cdn_expires_at" not in rec and cdn:
@@ -172,7 +171,7 @@ def normalize_image_meta_list(images: Any) -> list[dict[str, Any]]:
         elif cdn.startswith("http"):
             out.append(image_meta_record(cdn, local_path=local or None))
         elif local:
-            out.append({"local_path": local, "cdn_url": ""})
+            out.append({"local_path": local, "cdn_url": "", "identity": ""})
     return out
 
 
@@ -180,7 +179,7 @@ def merge_image_meta_lists(
     previous: list[Any] | None,
     incoming: list[Any] | None,
 ) -> list[dict[str, Any]]:
-    """Merge by CDN path identity (query stripped) or by ``local_path``."""
+    """Merge by ``identity`` (or legacy CDN path identity / ``local_path``)."""
     merged: dict[str, dict[str, Any]] = {}
     for group in (previous, incoming):
         for rec in normalize_image_meta_list(group):
@@ -191,7 +190,7 @@ def merge_image_meta_lists(
                 merged[key] = rec
             else:
                 prev = merged[key]
-                for field in ("cdn_url", "cdn_expires_at", "local_path"):
+                for field in ("cdn_url", "cdn_expires_at", "identity", "local_path"):
                     if rec.get(field):
                         prev[field] = rec[field]
     return list(merged.values())
@@ -231,7 +230,6 @@ def image_ref_looks_unsafe(rel: str) -> bool:
 
 
 def find_trusted_local_embeds(markdown: str, content_root: Path) -> list[str]:
-    """Local ``images/…`` embeds from *markdown* that exist under ``content/images/``."""
     if not markdown:
         return []
     out: list[str] = []
@@ -245,50 +243,18 @@ def find_trusted_local_embeds(markdown: str, content_root: Path) -> list[str]:
     return out
 
 
-def build_identity_reuse_map(
-    existing_body: str | None,
-    existing_images: list[Any] | None,
-    content_root: Path,
-) -> dict[str, str]:
-    """
-    Map ``cdn_url_identity`` → trusted ``images/…`` path to reuse (v3 migration).
-
-    Uses prior ``meta.images`` full URLs (v3 hash names) and any trusted embeds.
-    """
-    reuse: dict[str, str] = {}
-    for rel in find_trusted_local_embeds(existing_body or "", content_root):
-        reuse.setdefault(f"local:{rel}", rel)
-
-    for rec in normalize_image_meta_list(existing_images):
-        cdn = _entry_cdn_url(rec)
-        local = _entry_local_path(rec)
-        if cdn.startswith("http"):
-            ident = cdn_url_identity(cdn)
-            legacy = legacy_v3_image_rel(cdn)
-            if resolve_trusted_local_rel(legacy, content_root):
-                reuse[ident] = legacy
-            elif local and resolve_trusted_local_rel(local, content_root):
-                reuse[ident] = local
-        elif local and resolve_trusted_local_rel(local, content_root):
-            reuse[f"local:{local}"] = local
-    return reuse
-
-
-def strip_cdn_image_embeds(markdown: str) -> str:
-    """Remove ``![](https://media.licdn.com/…)`` lines from markdown."""
+def strip_https_image_embeds(markdown: str) -> str:
+    """Remove ``![](https://…)`` embeds (replaced by sidecar pass)."""
     if not markdown:
         return markdown
-    lines = []
-    for line in markdown.splitlines():
-        if CDN_URL_IN_MARKDOWN_RE.search(line):
-            continue
-        lines.append(line)
-    return "\n".join(lines).rstrip()
+
+    def _replace(match: re.Match[str]) -> str:
+        return ""
+
+    return HTTPS_IMAGE_EMBED_RE.sub(_replace, markdown)
 
 
 def strip_untrusted_local_image_embeds(markdown: str, content_root: Path) -> str:
-    """Remove untrusted ``![](images/…)`` embeds; keep surrounding text on the line."""
-
     def _replace(match: re.Match[str]) -> str:
         rel = match.group(1)
         if resolve_trusted_local_rel(rel, content_root):
@@ -300,241 +266,78 @@ def strip_untrusted_local_image_embeds(markdown: str, content_root: Path) -> str
     return LOCAL_IMAGE_EMBED_RE.sub(_replace, markdown)
 
 
-def _append_local_embeds(body: str, local_rels: list[str]) -> str:
+def _append_embeds(body: str, targets: list[str]) -> str:
     body = body.rstrip()
-    for rel in local_rels:
-        token = f"]({rel})"
+    for target in targets:
+        token = f"]({target})"
         if token in body:
             continue
-        body = f"{body}\n\n![]({rel})" if body else f"![]({rel})"
+        body = f"{body}\n\n![]({target})" if body else f"![]({target})"
     return body
 
 
-def is_linkedin_generic_placeholder_image(url: str) -> bool:
-    """LinkedIn UI placeholders (e.g. static ghost / logo assets), not post photos."""
-    parsed = urlparse((url or "").strip())
-    host = (parsed.netloc or "").lower()
-    path = (parsed.path or "").lower()
-    if host == "static.licdn.com":
-        return True
-    if "/scds/common/u/" in path:
-        return True
-    if "ghost" in path and "image" in path:
-        return True
-    return False
-
-
-def filter_post_image_urls(urls: list[str]) -> list[str]:
-    """De-duplicated HTTPS image URLs from extraction (all hosts), by path identity."""
-    out: list[str] = []
-    seen: set[str] = set()
-    for raw in urls:
-        url = (raw or "").strip()
-        if not url.startswith("https://"):
-            continue
-        if is_linkedin_generic_placeholder_image(url):
-            continue
-        ident = cdn_url_identity(url)
-        if ident in seen:
-            continue
-        seen.add(ident)
-        out.append(url)
-    return out
-
-
-def filter_linkedin_cdn_urls(urls: list[str]) -> list[str]:
-    """Backward-compatible alias for LinkedIn-only filtering (API fallback URLs)."""
-    return [
-        u
-        for u in filter_post_image_urls(urls)
-        if urlparse(u).netloc.endswith(_LINKEDIN_MEDIA_HOST_SUFFIX)
-    ]
+def build_identity_local_map(
+    existing_body: str | None,
+    existing_images: list[Any] | None,
+    content_root: Path,
+) -> dict[str, str]:
+    """Map CDN path identity → trusted ``images/…`` path from prior sidecar."""
+    local_by_ident: dict[str, str] = {}
+    for rec in normalize_image_meta_list(existing_images):
+        cdn = _entry_cdn_url(rec)
+        local = _entry_local_path(rec)
+        if cdn.startswith("http") and local:
+            if resolve_trusted_local_rel(local, content_root):
+                local_by_ident[cdn_url_identity(cdn)] = local
+    return local_by_ident
 
 
 def apply_post_image_sidecar(
     body: str,
-    cdn_urls: list[str],
+    image_urls: list[str],
     *,
     existing_body: str | None,
     existing_images: list[Any] | None = None,
-    download: Callable[[str], str | None],
-) -> tuple[str, list[dict[str, Any]], bool]:
+) -> tuple[str, list[dict[str, Any]]]:
     """
-    Attach post images to sidecar markdown + metadata.
+    Record CDN images in ``meta.images[]`` and markdown.
 
-    *download* is ``download_image_to_store`` (injected for tests).
+    New images: ``![](https://…signed…)`` (no download). Existing trusted local
+    files from a prior enrich are kept and preferred for the same identity.
     """
     from linkedin_api.activity_csv import get_data_dir
 
     content_root = get_data_dir() / "content"
-    body = strip_cdn_image_embeds(body)
+    body = strip_https_image_embeds(body)
     body = strip_untrusted_local_image_embeds(body, content_root)
-    reuse_map = build_identity_reuse_map(existing_body, existing_images, content_root)
+    local_by_ident = build_identity_local_map(
+        existing_body, existing_images, content_root
+    )
 
-    unique_urls = filter_post_image_urls(cdn_urls)
+    unique_urls = filter_post_image_urls(image_urls)
     trusted_prior = find_trusted_local_embeds(existing_body or "", content_root)
     if len(trusted_prior) == 1 and len(unique_urls) == 1:
-        sole = unique_urls[0]
-        if not cdn_url_is_expired(sole):
-            reuse_map.setdefault(cdn_url_identity(sole), trusted_prior[0])
+        local_by_ident.setdefault(cdn_url_identity(unique_urls[0]), trusted_prior[0])
 
     meta_records: list[dict[str, Any]] = []
-    local_embeds: list[str] = []
-    pipeline_complete = True
+    embed_targets: list[str] = []
 
     for image_url in unique_urls:
         ident = cdn_url_identity(image_url)
-        parsed = urlparse(image_url)
-        if not parsed.netloc.endswith(_LINKEDIN_MEDIA_HOST_SUFFIX):
-            logger.info(
-                "Downloading non-LinkedIn image host %s",
-                parsed.netloc or cdn_url_for_log(image_url),
-            )
-
-        if cdn_url_is_expired(image_url):
-            logger.warning(
-                "Skipping expired LinkedIn CDN image (e= in the past): %s",
-                cdn_url_for_log(image_url),
-            )
-            local_rel = reuse_map.get(ident)
-            rec = image_meta_record(image_url, local_path=local_rel)
-            meta_records.append(rec)
-            if local_rel:
-                local_embeds.append(local_rel)
-            else:
-                pipeline_complete = False
-            continue
-
-        local_rel = reuse_map.get(ident)
-        if not local_rel:
-            local_rel = download(image_url)
-
+        local_rel = local_by_ident.get(ident)
+        rec = image_meta_record(image_url)
         if local_rel and resolve_trusted_local_rel(local_rel, content_root):
-            meta_records.append(image_meta_record(image_url, local_path=local_rel))
-            if local_rel not in local_embeds:
-                local_embeds.append(local_rel)
+            rec["local_path"] = local_rel
+            embed_targets.append(local_rel)
         else:
-            logger.warning(
-                "Post image fetch failed; metadata only: %s",
-                cdn_url_for_log(image_url),
-            )
-            meta_records.append(image_meta_record(image_url))
-            pipeline_complete = False
+            embed_targets.append(image_url)
+        meta_records.append(rec)
 
     for rel in trusted_prior:
-        if rel not in local_embeds:
-            local_embeds.append(rel)
+        if rel not in embed_targets:
+            embed_targets.append(rel)
 
-    if local_embeds:
-        body = _append_local_embeds(body, local_embeds)
+    if embed_targets:
+        body = _append_embeds(body, embed_targets)
 
-    meta_records = reconcile_images_meta_with_body(
-        meta_records,
-        body,
-        existing_images=existing_images,
-        reuse_map=reuse_map,
-        content_root=content_root,
-    )
-
-    return body, meta_records, pipeline_complete
-
-
-def reconcile_images_meta_with_body(
-    records: list[dict[str, Any]],
-    body: str,
-    *,
-    existing_images: list[Any] | None,
-    reuse_map: dict[str, str],
-    content_root: Path,
-) -> list[dict[str, Any]]:
-    """Ensure ``meta.images`` documents every trusted local embed in *body*."""
-    merged: dict[str, dict[str, Any]] = {}
-    for rec in normalize_image_meta_list(records):
-        key = _meta_merge_key(rec)
-        if key:
-            merged[key] = dict(rec)
-
-    for rec in normalize_image_meta_list(existing_images):
-        key = _meta_merge_key(rec)
-        if not key or key in merged:
-            continue
-        cdn = _entry_cdn_url(rec)
-        ident = cdn_url_identity(cdn) if cdn.startswith("http") else ""
-        local = _entry_local_path(rec) or (reuse_map.get(ident) if ident else "")
-        if local and resolve_trusted_local_rel(local, content_root):
-            merged[key] = image_meta_record(cdn, local_path=local)
-        elif cdn:
-            merged[key] = image_meta_record(cdn)
-
-    for rec in merged.values():
-        cdn = _entry_cdn_url(rec)
-        if not cdn.startswith("http") or _entry_local_path(rec):
-            continue
-        ident = cdn_url_identity(cdn)
-        local = reuse_map.get(ident)
-        if local and resolve_trusted_local_rel(local, content_root):
-            rec["local_path"] = local
-
-    for rel in find_trusted_local_embeds(body, content_root):
-        if any(_entry_local_path(r) == rel for r in merged.values()):
-            continue
-        attached = False
-        for rec in merged.values():
-            cdn = _entry_cdn_url(rec)
-            if cdn.startswith("http") and not _entry_local_path(rec):
-                rec["local_path"] = rel
-                attached = True
-                break
-        if not attached:
-            merged[f"local:{rel}"] = {"cdn_url": "", "local_path": rel}
-
-    return list(merged.values())
-
-
-def enrichment_version_after_images(
-    images_meta: list[Any],
-    body: str,
-    content_root: Path,
-    *,
-    target_version: int,
-    prior_version: int,
-    image_pipeline_complete: bool = True,
-) -> int:
-    if not image_pipeline_complete:
-        return prior_version
-    if images_ready_for_enrichment_version(images_meta, body, content_root):
-        return target_version
-    return prior_version
-
-
-def images_ready_for_enrichment_version(
-    images_meta: list[Any],
-    body: str,
-    content_root: Path,
-) -> bool:
-    """
-    False when a CDN image has no ``local_path`` or a body embed is not in meta.
-
-    Used to avoid stamping ENRICHMENT_VERSION when images could not be stored.
-    """
-    embeds = find_trusted_local_embeds(body, content_root)
-    normalized = normalize_image_meta_list(images_meta)
-    for rec in normalized:
-        if _entry_cdn_url(rec).startswith("http") and not _entry_local_path(rec):
-            return False
-    for rel in embeds:
-        if not any(_entry_local_path(r) == rel for r in normalized):
-            return False
-    return True
-
-
-def sidecar_still_has_trusted_embeds(
-    markdown: str,
-    prior_trusted: list[str],
-    *,
-    content_root: Path,
-) -> bool:
-    if not prior_trusted:
-        return True
-    current = find_trusted_local_embeds(markdown, content_root)
-    return all(rel in current for rel in prior_trusted)
+    return body, meta_records

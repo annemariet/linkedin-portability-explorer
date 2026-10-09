@@ -23,11 +23,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from linkedin_api.activity_csv import get_data_dir, get_default_csv_path
+from linkedin_api.activity_csv import get_default_csv_path
 from linkedin_api.enriched_record import EnrichedRecord
 from linkedin_api.content_store import (
     _ms_to_iso,
-    download_image_to_store,
     has_content,
     load_content,
     load_metadata,
@@ -36,11 +35,7 @@ from linkedin_api.content_store import (
     save_content,
     save_metadata,
 )
-from linkedin_api.post_images import (
-    apply_post_image_sidecar,
-    enrichment_version_after_images,
-    filter_post_image_urls,
-)
+from linkedin_api.post_images import apply_post_image_sidecar
 from linkedin_api.http_client import fetch_linkedin_post_html
 from linkedin_api.post_extraction import (
     ENRICHMENT_VERSION,
@@ -149,24 +144,6 @@ def _row_needs_work(rec: EnrichedRecord) -> tuple[str, dict | None]:
     return "merge", meta
 
 
-def _enrichment_version_after_images(
-    existing_meta: dict,
-    images_meta: list,
-    body: str,
-    *,
-    image_pipeline_complete: bool = True,
-) -> int:
-    content_root = get_data_dir() / "content"
-    return enrichment_version_after_images(
-        images_meta,
-        body,
-        content_root,
-        target_version=ENRICHMENT_VERSION,
-        prior_version=_meta_version(existing_meta),
-        image_pipeline_complete=image_pipeline_complete,
-    )
-
-
 def _save_from_api_fallback(
     rec: EnrichedRecord,
     post_id: str,
@@ -194,18 +171,11 @@ def _save_from_api_fallback(
         existing_meta = load_metadata(post_id, post_urn=post_urn) or {}
         prev_images = existing_meta.get("images")
         image_candidates = list(api_urls) + extract_urls_from_text(api_body)
-        body, images_meta, pipeline_complete = apply_post_image_sidecar(
+        body, images_meta = apply_post_image_sidecar(
             body,
-            filter_post_image_urls(image_candidates),
+            image_candidates,
             existing_body=existing_body,
             existing_images=prev_images if isinstance(prev_images, list) else None,
-            download=download_image_to_store,
-        )
-        enrichment_version = _enrichment_version_after_images(
-            existing_meta,
-            images_meta,
-            body,
-            image_pipeline_complete=pipeline_complete,
         )
         save_content(post_id, body, post_urn=post_urn)
         save_metadata(
@@ -223,7 +193,7 @@ def _save_from_api_fallback(
             post_created_at=post_created or "",
             post_urn=post_urn,
             activities_ids=[rec.activity_id] if rec.activity_id else [],
-            enrichment_version=enrichment_version,
+            enrichment_version=ENRICHMENT_VERSION,
         )
         if reason == "extract_fail":
             telemetry.fallback_extract_fail_post_body += 1
@@ -238,18 +208,11 @@ def _save_from_api_fallback(
         existing_body = load_content(post_id, post_urn=post_urn) or ""
         existing_meta = load_metadata(post_id, post_urn=post_urn) or {}
         prev_images = existing_meta.get("images")
-        body, images_meta, pipeline_complete = apply_post_image_sidecar(
+        body, images_meta = apply_post_image_sidecar(
             existing_body,
-            filter_post_image_urls(api_urls),
+            api_urls,
             existing_body=existing_body,
             existing_images=prev_images if isinstance(prev_images, list) else None,
-            download=download_image_to_store,
-        )
-        enrichment_version = _enrichment_version_after_images(
-            existing_meta,
-            images_meta,
-            body,
-            image_pipeline_complete=pipeline_complete,
         )
         if body != existing_body:
             save_content(post_id, body, post_urn=post_urn)
@@ -268,7 +231,7 @@ def _save_from_api_fallback(
             post_created_at=post_created or "",
             post_urn=post_urn,
             activities_ids=[rec.activity_id] if rec.activity_id else [],
-            enrichment_version=enrichment_version,
+            enrichment_version=ENRICHMENT_VERSION,
         )
         if reason == "extract_fail":
             telemetry.fallback_extract_fail_urls_only += 1

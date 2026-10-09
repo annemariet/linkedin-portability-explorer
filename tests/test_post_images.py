@@ -1,24 +1,25 @@
-"""Tests for linkedin_api.post_images (local durable images + CDN metadata)."""
+"""Tests for CDN-only post image sidecars (no enrich-time download)."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from unittest.mock import patch
 
+import pytest
+
 from linkedin_api.post_images import (
+    EXPIRED_CDN_FIXTURE_URL,
     apply_post_image_sidecar,
+    cdn_url_for_log,
     cdn_url_identity,
     cdn_url_is_expired,
-    legacy_v3_image_rel,
+    filter_post_image_urls,
     merge_image_meta_lists,
     parse_linkedin_cdn_expires_at_unix,
     resolve_trusted_local_rel,
 )
 
-EXPIRED_CDN_FIXTURE_URL = (
-    "https://media.licdn.com/dms/image/sync/v2/D4E27AQHREDACTED/articleshare-shrink_480/"
-    "B4EZmREDACTED/0/1776442767212?e=1780668000&v=beta&t=REDACTED"
-)
+_BASE = "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
 
 
 def test_parse_linkedin_cdn_expires_at_unix() -> None:
@@ -30,147 +31,109 @@ def test_parse_linkedin_cdn_expires_at_unix() -> None:
     )
 
 
-def test_cdn_url_identity_strips_query() -> None:
-    a = "https://media.licdn.com/dms/image/v2/x/0?e=1&t=aaa"
-    b = "https://media.licdn.com/dms/image/v2/x/0?e=2&t=bbb"
-    assert cdn_url_identity(a) == cdn_url_identity(b)
+def test_cdn_url_for_log_strips_query() -> None:
+    url = f"{_BASE}?e=1&v=beta&t=SECRETTOKEN"
+    assert "t=" not in cdn_url_for_log(url)
+    assert "SECRET" not in cdn_url_for_log(url)
 
 
-def test_merge_image_meta_by_path_not_query() -> None:
-    base = "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
-    prev = [{"cdn_url": f"{base}?e=1&t=a", "local_path": "images/keep.jpg"}]
-    incoming = [{"cdn_url": f"{base}?e=2&t=b"}]
+def test_merge_image_meta_by_identity_not_query() -> None:
+    prev = [{"cdn_url": f"{_BASE}?e=1&t=a", "identity": cdn_url_identity(_BASE)}]
+    incoming = [{"cdn_url": f"{_BASE}?e=2&t=b", "identity": cdn_url_identity(_BASE)}]
     merged = merge_image_meta_lists(prev, incoming)
     assert len(merged) == 1
-    assert merged[0]["local_path"] == "images/keep.jpg"
     assert "e=2" in merged[0]["cdn_url"]
 
 
 def test_resolve_trusted_local_rel_rejects_traversal(tmp_path) -> None:
     content_root = tmp_path / "content"
-    images = content_root / "images"
-    images.mkdir(parents=True)
+    (content_root / "images").mkdir(parents=True)
     assert (
         resolve_trusted_local_rel("images/../../../../../etc/hostname", content_root)
         is None
     )
 
 
-def test_apply_sidecar_ignores_malicious_embed_in_new_body(
-    tmp_path, monkeypatch
-) -> None:
+def test_enrich_embeds_cdn_urls_without_download(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
-    content_root = tmp_path / "content"
-    images = content_root / "images"
-    images.mkdir(parents=True)
-    (images / "good.jpg").write_bytes(b"ok")
-
-    cdn = "https://media.licdn.com/dms/image/v2/example/0?e=2147483647&v=beta&t=x"
-
-    def _fake_download(url: str) -> str | None:
-        assert url == cdn
-        return "images/good.jpg"
-
-    body, meta, _ = apply_post_image_sidecar(
-        "Author text\n\n![](images/../../../../../etc/hostname)",
-        [cdn],
-        existing_body="",
-        download=_fake_download,
+    from linkedin_api.post_extraction import (
+        PostExtractionResult,
+        save_extraction_to_store,
     )
-    assert "Author text" in body
-    assert "etc/hostname" not in body
-    assert "images/good.jpg" in body
-    assert meta[0]["local_path"] == "images/good.jpg"
+
+    cdn = f"{_BASE}?e=2147483647&v=beta&t=signed"
+    ext = PostExtractionResult(
+        markdown_body="Post body.",
+        html_meta={},
+        urls=[],
+        mentions=[],
+        hashtags=[],
+        image_urls=[cdn],
+    )
+    with patch("requests.get") as mock_get:
+        save_extraction_to_store(
+            post_id="1",
+            post_urn="urn:li:activity:1",
+            post_url="https://www.linkedin.com/feed/update/urn:li:activity:1",
+            ext=ext,
+            urls_from_api=[],
+            activity_time_iso="2026-01-01T00:00:00Z",
+            post_created="2026-01-01T00:00:00Z",
+            activities_ids=["a"],
+        )
+        for call in mock_get.call_args_list:
+            url = call.args[0] if call.args else call.kwargs.get("url", "")
+            if "licdn.com" in str(url) and "/dms/image" in str(url):
+                pytest.fail(f"unexpected image GET {url}")
+
+    from linkedin_api.content_store import load_content, load_metadata
+
+    body = load_content("1", post_urn="urn:li:activity:1")
+    assert body is not None
+    assert cdn in body
+    assert "![](https://" in body
+    meta = load_metadata("1", post_urn="urn:li:activity:1")
+    assert meta is not None
+    assert len(meta["images"]) == 1
+    assert meta["images"][0]["identity"] == cdn_url_identity(cdn)
+    assert meta["images"][0].get("local_path") in (None, "")
 
 
-def test_apply_sidecar_handles_all_cdn_urls(tmp_path, monkeypatch) -> None:
+def test_multi_image_post_keeps_all_cdn_embeds(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
-    base = "https://media.licdn.com/dms/image/v2"
     urls = [
-        f"{base}/img1/0?e=2147483647&t=1",
-        f"{base}/img2/0?e=2147483647&t=2",
-        f"{base}/img3/0?e=2147483647&t=3",
+        f"{_BASE}/img1/0?e=2147483647&t=1",
+        f"{_BASE}/img2/0?e=2147483647&t=2",
+        f"{_BASE}/img3/0?e=2147483647&t=3",
     ]
-    calls: list[str] = []
-
-    def _fake_download(url: str) -> str | None:
-        calls.append(url)
-        idx = len(calls)
-        images = tmp_path / "content" / "images"
-        images.mkdir(parents=True, exist_ok=True)
-        name = f"img{idx}.jpg"
-        (images / name).write_bytes(b"x")
-        return f"images/{name}"
-
-    body, meta, _ = apply_post_image_sidecar(
-        "Post",
+    body, meta = apply_post_image_sidecar(
+        "text",
         urls,
         existing_body="",
-        download=_fake_download,
     )
-    assert len(calls) == 3
+    assert body.count("![](https://") == 3
     assert len(meta) == 3
-    assert body.count("![](images/") == 3
 
 
-def test_save_extraction_downloads_local_and_records_cdn_metadata(
-    tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
-    from linkedin_api.content_store import load_content, load_metadata
-    from linkedin_api.post_extraction import (
-        PostExtractionResult,
-        save_extraction_to_store,
-    )
-
-    cdn = "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0?e=2147483647&v=beta&t=x"
-    ext = PostExtractionResult(
-        markdown_body="Post body text.",
-        html_meta={},
-        urls=[],
-        mentions=[],
-        hashtags=[],
-        image_urls=[cdn],
-    )
-
-    def _fake_download(url: str) -> str | None:
-        assert url == cdn
-        images = tmp_path / "content" / "images"
-        images.mkdir(parents=True)
-        (images / "abc123.jpg").write_bytes(b"jpeg")
-        return "images/abc123.jpg"
-
-    with patch(
-        "linkedin_api.post_extraction.download_image_to_store",
-        side_effect=_fake_download,
-    ):
-        save_extraction_to_store(
-            post_id="12345",
-            post_urn="urn:li:activity:1",
-            post_url="https://www.linkedin.com/feed/update/urn:li:activity:1",
-            ext=ext,
-            urls_from_api=[],
-            activity_time_iso="2026-01-01T00:00:00Z",
-            post_created="2026-01-01T00:00:00Z",
-            activities_ids=["act-1"],
+def test_resign_does_not_grow_meta_images() -> None:
+    base = cdn_url_identity(_BASE)
+    prev = [{"cdn_url": f"{_BASE}?e=1&t=a", "identity": base}]
+    for t in ("b", "c", "d"):
+        prev = merge_image_meta_lists(
+            prev,
+            [{"cdn_url": f"{_BASE}?e=2&t={t}", "identity": base}],
         )
-
-    body = load_content("12345", post_urn="urn:li:activity:1")
-    assert body is not None
-    assert "![](images/abc123.jpg)" in body
-    assert "media.licdn.com" not in body
-    meta = load_metadata("12345", post_urn="urn:li:activity:1")
-    assert meta is not None
-    images = meta["images"]
-    assert len(images) == 1
-    assert images[0]["cdn_url"] == cdn
-    assert images[0]["local_path"] == "images/abc123.jpg"
-    assert "cdn_expires_at" in images[0]
+    assert len(prev) == 1
 
 
-def test_reenrich_preserves_local_embed_and_file(tmp_path, monkeypatch) -> None:
+def test_reenrich_preserves_existing_local_embed(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
-    from linkedin_api.content_store import load_content, load_metadata, save_content
+    from linkedin_api.content_store import (
+        load_content,
+        load_metadata,
+        save_content,
+        save_metadata,
+    )
     from linkedin_api.post_extraction import (
         PostExtractionResult,
         save_extraction_to_store,
@@ -178,310 +141,57 @@ def test_reenrich_preserves_local_embed_and_file(tmp_path, monkeypatch) -> None:
 
     images = tmp_path / "content" / "images"
     images.mkdir(parents=True)
-    (images / "existing.jpg").write_bytes(b"keep")
-    save_content(
-        "12345",
-        "Older body.\n\n![](images/existing.jpg)",
-        post_urn="urn:li:activity:1",
-    )
-
-    cdn = EXPIRED_CDN_FIXTURE_URL
-    ext = PostExtractionResult(
-        markdown_body="New extraction body.",
-        html_meta={},
-        urls=[],
-        mentions=[],
-        hashtags=[],
-        image_urls=[cdn],
-    )
-
-    with patch("linkedin_api.post_extraction.download_image_to_store") as mock_dl:
-        save_extraction_to_store(
-            post_id="12345",
-            post_urn="urn:li:activity:1",
-            post_url="https://www.linkedin.com/feed/update/urn:li:activity:1",
-            ext=ext,
-            urls_from_api=[],
-            activity_time_iso="2026-01-01T00:00:00Z",
-            post_created="2026-01-01T00:00:00Z",
-            activities_ids=["act-1"],
-        )
-        mock_dl.assert_not_called()
-
-    body = load_content("12345", post_urn="urn:li:activity:1")
-    assert body is not None
-    assert "![](images/existing.jpg)" in body
-    assert "media.licdn.com" not in body
-    assert (images / "existing.jpg").read_bytes() == b"keep"
-    meta = load_metadata("12345", post_urn="urn:li:activity:1")
-    assert meta is not None
-    assert meta["images"][0]["cdn_url"] == cdn
-    assert meta["images"][0].get("local_path") == "images/existing.jpg"
-
-
-def test_api_fallback_preserves_local_embed_and_skips_v4_bump(
-    tmp_path, monkeypatch
-) -> None:
-    monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
-    from linkedin_api.content_store import load_content, load_metadata, save_content
-    from linkedin_api.enrich_activities import _save_from_api_fallback
-    from linkedin_api.enriched_record import EnrichedRecord
-    from linkedin_api.enrich_activities import EnrichmentTelemetry
-
-    images = tmp_path / "content" / "images"
-    images.mkdir(parents=True)
-    (images / "v3img.jpg").write_bytes(b"keep")
-    save_content(
-        "99",
-        "CSV body " + ("x" * 50) + "\n\n![](images/v3img.jpg)",
-        post_urn="urn:li:activity:99",
-    )
-    from linkedin_api.content_store import save_metadata
-
+    (images / "keep.jpg").write_bytes(b"local")
+    save_content("2", "Old.\n\n![](images/keep.jpg)", post_urn="urn:li:activity:2")
     save_metadata(
-        "99",
-        post_urn="urn:li:activity:99",
+        "2",
+        post_urn="urn:li:activity:2",
         enrichment_version=3,
-        activities_ids=["old"],
+        images=[{"cdn_url": f"{_BASE}?e=1&t=old", "local_path": "images/keep.jpg"}],
     )
-
-    rec = EnrichedRecord(
-        post_urn="urn:li:activity:99",
-        post_url="https://www.linkedin.com/feed/update/urn:li:activity:99",
-        content="Replacement CSV text " + ("y" * 50),
-        urls=[],
-        interaction_type="post",
-        reaction_type=None,
-        comment_text="",
-        post_id="99",
-        activity_id="new-act",
-        timestamp=1,
-        created_at="",
-    )
-    telemetry = EnrichmentTelemetry()
-    _save_from_api_fallback(
-        rec,
-        "99",
-        "urn:li:activity:99",
-        rec.post_url,
-        None,
-        telemetry=telemetry,
-        reason="http_fail",
-    )
-    body = load_content("99", post_urn="urn:li:activity:99")
-    assert body is not None
-    assert "![](images/v3img.jpg)" in body
-    meta = load_metadata("99", post_urn="urn:li:activity:99")
-    assert meta is not None
-    from linkedin_api.post_extraction import ENRICHMENT_VERSION
-
-    assert meta.get("enrichment_version") == ENRICHMENT_VERSION
-    assert (images / "v3img.jpg").exists()
-
-
-def test_v3_reenrich_fresh_cdn_reuses_legacy_file_without_download(
-    tmp_path, monkeypatch
-) -> None:
-    """v3 file names use full URL hash; v4 must reuse, not re-download."""
-    monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
-    from linkedin_api.content_store import load_content, load_metadata, save_content
-    from linkedin_api.content_store import save_metadata
-    from linkedin_api.post_extraction import (
-        PostExtractionResult,
-        save_extraction_to_store,
-    )
-
-    base = "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
-    v3_url = f"{base}?e=2147483647&v=beta&t=oldsignature"
-    fresh_url = f"{base}?e=2147483647&v=beta&t=freshsignature"
-    legacy_rel = legacy_v3_image_rel(v3_url)
-    images = tmp_path / "content" / "images"
-    images.mkdir(parents=True)
-    (tmp_path / "content" / legacy_rel).write_bytes(b"v3-bytes")
-
-    save_content(
-        "12345",
-        f"Older body.\n\n![]({legacy_rel})",
-        post_urn="urn:li:activity:1",
-    )
-    save_metadata(
-        "12345",
-        post_urn="urn:li:activity:1",
-        enrichment_version=3,
-        images=[v3_url],
-    )
-
+    fresh = f"{_BASE}?e=2147483647&t=new"
     ext = PostExtractionResult(
-        markdown_body="New extraction body.",
+        markdown_body="New body.",
         html_meta={},
         urls=[],
         mentions=[],
         hashtags=[],
-        image_urls=[fresh_url],
+        image_urls=[fresh],
     )
-
-    with patch("linkedin_api.post_extraction.download_image_to_store") as mock_dl:
+    with patch("requests.get"):
         save_extraction_to_store(
-            post_id="12345",
-            post_urn="urn:li:activity:1",
-            post_url="https://www.linkedin.com/feed/update/urn:li:activity:1",
+            post_id="2",
+            post_urn="urn:li:activity:2",
+            post_url="https://www.linkedin.com/feed/update/urn:li:activity:2",
             ext=ext,
             urls_from_api=[],
             activity_time_iso="2026-01-01T00:00:00Z",
             post_created="2026-01-01T00:00:00Z",
-            activities_ids=["act-1"],
+            activities_ids=["a"],
         )
-        mock_dl.assert_not_called()
-
-    assert len(list(images.iterdir())) == 1
-    assert (images / legacy_rel.split("/")[-1]).read_bytes() == b"v3-bytes"
-    body = load_content("12345", post_urn="urn:li:activity:1")
+    body = load_content("2", post_urn="urn:li:activity:2")
     assert body is not None
-    assert f"![]({legacy_rel})" in body
-    meta = load_metadata("12345", post_urn="urn:li:activity:1")
-    assert meta is not None
-    assert meta["images"][0]["local_path"] == legacy_rel
-    assert meta["images"][0]["cdn_url"] == fresh_url
+    assert "![](images/keep.jpg)" in body
+    assert fresh not in body
+    meta = load_metadata("2", post_urn="urn:li:activity:2")
+    assert meta["images"][0]["local_path"] == "images/keep.jpg"
+    assert (images / "keep.jpg").read_bytes() == b"local"
 
 
-def test_apply_sidecar_downloads_non_licdn_hosts(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
-    url = "https://media-exp1.licdn.com/dms/image/v2/example/0?e=2147483647&t=x"
-    seen: list[str] = []
-
-    def _fake_download(u: str) -> str | None:
-        seen.append(u)
-        images = tmp_path / "content" / "images"
-        images.mkdir(parents=True, exist_ok=True)
-        (images / "x.jpg").write_bytes(b"j")
-        return "images/x.jpg"
-
-    apply_post_image_sidecar(
-        "body",
-        [url],
-        existing_body="",
-        download=_fake_download,
-    )
-    assert seen == [url]
-
-
-def test_filter_post_image_urls_skips_static_licdn_placeholder() -> None:
-    from linkedin_api.post_images import filter_post_image_urls
-
+def test_placeholder_skipped() -> None:
     placeholder = "https://static.licdn.com/scds/common/u/images/logos/linkedin/logo-in-win8-tile-80.png"
-    real = "https://media.licdn.com/dms/image/v2/example/0?e=2147483647&t=x"
+    real = f"{_BASE}?e=2147483647&t=x"
     assert filter_post_image_urls([placeholder, real]) == [real]
 
 
-def test_fallback_fresh_cdn_sets_local_path_and_v4(tmp_path, monkeypatch) -> None:
+def test_apply_sidecar_strips_malicious_local_embed(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
-    from linkedin_api.content_store import load_metadata, save_content, save_metadata
-    from linkedin_api.enrich_activities import _save_from_api_fallback
-    from linkedin_api.enriched_record import EnrichedRecord
-    from linkedin_api.enrich_activities import EnrichmentTelemetry
-    from linkedin_api.post_extraction import ENRICHMENT_VERSION
-
-    base = "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
-    cdn = f"{base}?e=2147483647&v=beta&t=fresh"
-    legacy_rel = legacy_v3_image_rel(cdn)
-    images = tmp_path / "content" / "images"
-    images.mkdir(parents=True)
-    (tmp_path / "content" / legacy_rel).write_bytes(b"v3")
-
-    save_content(
-        "88",
-        "CSV body " + ("x" * 50) + f"\n\n![]({legacy_rel})",
-        post_urn="urn:li:activity:88",
+    cdn = f"{_BASE}?e=2147483647&t=x"
+    body, meta = apply_post_image_sidecar(
+        "Look ![](images/../../etc/passwd) here",
+        [cdn],
+        existing_body="",
     )
-    save_metadata(
-        "88",
-        post_urn="urn:li:activity:88",
-        enrichment_version=3,
-        images=[cdn],
-    )
-
-    rec = EnrichedRecord(
-        post_urn="urn:li:activity:88",
-        post_url="https://www.linkedin.com/feed/update/urn:li:activity:88",
-        content="CSV body " + ("z" * 50),
-        urls=[cdn],
-        interaction_type="post",
-        reaction_type=None,
-        comment_text="",
-        post_id="88",
-        activity_id="act",
-        timestamp=1,
-        created_at="",
-    )
-    _save_from_api_fallback(
-        rec,
-        "88",
-        "urn:li:activity:88",
-        rec.post_url,
-        None,
-        telemetry=EnrichmentTelemetry(),
-        reason="http_fail",
-    )
-    meta = load_metadata("88", post_urn="urn:li:activity:88")
-    assert meta is not None
-    assert meta["images"][0].get("local_path") == legacy_rel
-    assert meta.get("enrichment_version") == ENRICHMENT_VERSION
-
-
-def test_fallback_expired_cdn_keeps_v3_and_local(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
-    from linkedin_api.content_store import load_metadata, save_content, save_metadata
-    from linkedin_api.enrich_activities import _save_from_api_fallback
-    from linkedin_api.enriched_record import EnrichedRecord
-    from linkedin_api.enrich_activities import EnrichmentTelemetry
-
-    base = "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
-    v3_url = f"{base}?e=2147483647&v=beta&t=old"
-    expired = EXPIRED_CDN_FIXTURE_URL
-    legacy_rel = legacy_v3_image_rel(v3_url)
-    images = tmp_path / "content" / "images"
-    images.mkdir(parents=True)
-    (tmp_path / "content" / legacy_rel).write_bytes(b"keep")
-
-    save_content(
-        "77",
-        "CSV body " + ("x" * 50) + f"\n\n![]({legacy_rel})",
-        post_urn="urn:li:activity:77",
-    )
-    save_metadata(
-        "77",
-        post_urn="urn:li:activity:77",
-        enrichment_version=3,
-        images=[v3_url],
-    )
-
-    rec = EnrichedRecord(
-        post_urn="urn:li:activity:77",
-        post_url="https://www.linkedin.com/feed/update/urn:li:activity:77",
-        content="CSV body " + ("y" * 50),
-        urls=[expired],
-        interaction_type="post",
-        reaction_type=None,
-        comment_text="",
-        post_id="77",
-        activity_id="act",
-        timestamp=1,
-        created_at="",
-    )
-    with patch("linkedin_api.post_extraction.download_image_to_store") as mock_dl:
-        _save_from_api_fallback(
-            rec,
-            "77",
-            "urn:li:activity:77",
-            rec.post_url,
-            None,
-            telemetry=EnrichmentTelemetry(),
-            reason="http_fail",
-        )
-        mock_dl.assert_not_called()
-
-    meta = load_metadata("77", post_urn="urn:li:activity:77")
-    assert meta is not None
-    assert meta.get("enrichment_version") == 3
-    assert meta["images"][0].get("local_path") == legacy_rel
-    assert (images / legacy_rel.split("/")[-1]).read_bytes() == b"keep"
+    assert "passwd" not in body
+    assert cdn in body
+    assert len(meta) == 1
