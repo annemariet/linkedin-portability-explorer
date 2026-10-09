@@ -19,7 +19,8 @@ https://media.licdn.com/dms/image/sync/v2/D4E27AQH{…}/articleshare-shrink_480/
 
 - `e=1780668000` → **2026-06-05 UTC**
 - After expiry or non-200 HTTP, download **skips** with a **warning** (URL path only in logs); enrich **does not fail**.
-- API/HTML fallback runs the same sidecar step; if a prior local embed would be lost, **do not** bump `enrichment_version` so the post is retried.
+- API/HTML fallback runs the same sidecar step and must write `local_path` for kept embeds. **Do not** bump `enrichment_version` when any image URL was expired or failed without a stored file.
+- **Placeholders:** `static.licdn.com` / generic ghost assets are not downloaded or embedded.
 
 ## Re-enrichment (v4)
 
