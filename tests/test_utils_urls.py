@@ -1,5 +1,7 @@
 """Tests for linkedin_api.utils.urls module."""
 
+import os
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -397,6 +399,8 @@ class TestResolveRedirect:
     @pytest.mark.integration
     def test_real_lnkd_in_erbBvi7E(self):
         """Live: https://lnkd.in/erbBvi7E should resolve to the French government press release."""
+        if os.getenv("LINKEDIN_TEST_ONLINE") != "1":
+            pytest.skip("Set LINKEDIN_TEST_ONLINE=1 for live lnkd.in redirect tests.")
         result = resolve_redirect("https://lnkd.in/erbBvi7E")
         assert "presse.economie.gouv.fr" in result
 
@@ -404,6 +408,8 @@ class TestResolveRedirect:
     def test_real_lnkd_in_eAWEsmVw_resolves_to_github_datagouv_mcp(self):
         """Live: lnkd.in/eAWEsmVw gives HTTP 406 (no interstitial) but redirects to GitHub.
         We should resolve to https://github.com/datagouv/datagouv-mcp."""
+        if os.getenv("LINKEDIN_TEST_ONLINE") != "1":
+            pytest.skip("Set LINKEDIN_TEST_ONLINE=1 for live lnkd.in redirect tests.")
         result = resolve_redirect("https://lnkd.in/eAWEsmVw")
         assert result == "https://github.com/datagouv/datagouv-mcp"
 
@@ -413,6 +419,8 @@ class TestResolveRedirect:
     ):
         """Live: lnkd.in/eMcHSAFH redirects to stats.agriculture.gouv.fr which has SSL cert
         issues. With REQUESTS_SSL_VERIFY=false, we should resolve to the target."""
+        if os.getenv("LINKEDIN_TEST_ONLINE") != "1":
+            pytest.skip("Set LINKEDIN_TEST_ONLINE=1 for live lnkd.in redirect tests.")
         import warnings
 
         import urllib3
@@ -428,6 +436,8 @@ class TestResolveRedirect:
     def test_real_lnkd_in_geemzfeQ_resolves_to_theshamblog(self):
         """Live: lnkd.in/geemzfeQ should show LinkedIn interstitial with target
         https://theshamblog.com/an-ai-agent-wrote-a-hit-piece-on-me-part-4/"""
+        if os.getenv("LINKEDIN_TEST_ONLINE") != "1":
+            pytest.skip("Set LINKEDIN_TEST_ONLINE=1 for live lnkd.in redirect tests.")
         result = resolve_redirect("https://lnkd.in/geemzfeQ")
         assert "theshamblog.com" in result
 

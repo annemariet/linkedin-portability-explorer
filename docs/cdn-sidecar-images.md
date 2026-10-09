@@ -2,12 +2,12 @@
 
 ## Enrich behaviour
 
-1. **Download first** — `download_image_to_store` writes `content/images/<sha>.jpg`.
-2. **Markdown** — embed `![](images/<sha>.jpg)` only when a local file exists. **Never** embed `https://media.licdn.com/…` when local copy exists.
-3. **Metadata** — `meta.images[]` objects:
-   - `cdn_url` — original LinkedIn CDN URL (fallback reference)
-   - `cdn_expires_at` — ISO-8601 UTC decoded from query param `e=`
-   - `local_path` — e.g. `images/<sha>.jpg` when downloaded
+1. **Download first** — `download_image_to_store` writes `content/images/<sha(path)>.<ext>` (hash uses the CDN URL **path**, query stripped).
+2. **Markdown** — embed `![](images/…)` only for files under `content/images/`. **Never** trust `images/…` paths from fresh HTML extraction (author-controlled); only paths from the **existing** sidecar `.md` are reused when download is skipped.
+3. **Metadata** — one `meta.images[]` entry per CDN image path identity (all `cdn_urls` from extraction, not only the first):
+   - `cdn_url` — latest signed LinkedIn CDN URL
+   - `cdn_expires_at` — ISO-8601 UTC from query param `e=` (60s clock-skew margin before expiry)
+   - `local_path` — e.g. `images/<sha>.jpg` when on disk
 
 ## CDN signed URLs
 
@@ -18,18 +18,18 @@ https://media.licdn.com/dms/image/sync/v2/D4E27AQH{…}/articleshare-shrink_480/
 ```
 
 - `e=1780668000` → **2026-06-05 UTC**
-- After expiry (or HTTP **403**), download/export **skips** the image with a **warning**; enrich/export **do not fail**.
-- Metadata may still list `cdn_url` for a future refresh; markdown is not updated with a dead hotlink.
+- After expiry or non-200 HTTP, download **skips** with a **warning** (URL path only in logs); enrich **does not fail**.
+- API/HTML fallback runs the same sidecar step; if a prior local embed would be lost, **do not** bump `enrichment_version` so the post is retried.
 
 ## Re-enrichment (v4)
 
 | Case | Behaviour |
 |------|-----------|
-| Sidecar already has `![](images/…)` and file exists | **Keep** embed and file; refresh `cdn_url` / `cdn_expires_at` in meta only |
-| Version &lt; 4, full re-enrich | Re-run download + local embed; strip any CDN markdown embeds |
-| CDN fetch fails (non-expired) | Metadata-only `cdn_url`; no markdown embed |
-| CDN expired | Skip fetch; metadata-only; warning logged |
+| Sidecar already has trusted `![](images/…)` and file exists | Keep embed; merge meta by CDN path identity |
+| Version &lt; 4, full re-enrich | Re-run download for each CDN URL; strip CDN markdown embeds |
+| CDN fetch fails (non-expired) | Metadata-only `cdn_url`; reuse trusted prior local if present |
+| CDN expired | Skip fetch; attach trusted prior local when available |
 
-## Vault export
+## Vault export (amai-lab)
 
-`linkedin_api.post_images.fetch_image_bytes_for_vault` reads `local_path` first, then optional CDN GET (same expiry/403 rules). Missing bytes are not fatal.
+Catalog export copies `![](images/…)` only when the resolved file stays inside `content/images/` (see `linkedin_vault.vault_export`).

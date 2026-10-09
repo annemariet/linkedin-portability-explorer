@@ -80,17 +80,44 @@ def _images_dir() -> Path:
     return d
 
 
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def _image_suffix_from_bytes(content: bytes, content_type: str) -> str:
+    ct = (content_type or "").split(";", 1)[0].strip().lower()
+    by_ct = {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/png": ".png",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+    }
+    if ct in by_ct:
+        return by_ct[ct]
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if content.startswith(b"GIF87a") or content.startswith(b"GIF89a"):
+        return ".gif"
+    if len(content) >= 12 and content[0:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return ".webp"
+    return ".jpg"
+
+
 def download_image_to_store(url: str) -> str | None:
     """
     Download *url* to ``content/images/``; return a path relative to the
     content directory (e.g. ``"images/abc123.jpg"``) or ``None`` on failure.
 
-    Uses a URL-hash filename so repeated calls for the same URL are no-ops.
-    Skips expired signed URLs (``e=``) and logs CDN HTTP failures.
+    Filename hash uses the CDN URL path (query stripped). Skips expired
+    signed URLs (``e=``) and logs CDN HTTP failures.
     """
-    import urllib.parse
-
-    from linkedin_api.post_images import cdn_url_is_expired
+    from linkedin_api.post_images import (
+        cdn_url_for_log,
+        cdn_url_identity,
+        cdn_url_is_expired,
+    )
 
     try:
         import requests as _req
@@ -102,18 +129,18 @@ def download_image_to_store(url: str) -> str | None:
         return None
 
     if cdn_url_is_expired(url):
-        logger.warning("Skipping expired LinkedIn CDN image download: %s", url)
+        logger.warning(
+            "Skipping expired LinkedIn CDN image download: %s",
+            cdn_url_for_log(url),
+        )
         return None
 
     images_dir = _images_dir()
-    url_hash = hashlib.sha256(url.encode()).hexdigest()[:24]
-    parsed = urllib.parse.urlparse(url)
-    suffix = Path(parsed.path).suffix.lower()
-    if suffix not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
-        suffix = ".jpg"
-    filename = f"{url_hash}{suffix}"
+    identity = cdn_url_identity(url)
+    url_hash = hashlib.sha256(identity.encode()).hexdigest()[:24]
+    filename = f"{url_hash}.jpg"
     local_path = images_dir / filename
-    if local_path.exists():
+    if local_path.is_file() and local_path.stat().st_size > 0:
         return f"images/{filename}"
     try:
         resp = _req.get(
@@ -127,19 +154,37 @@ def download_image_to_store(url: str) -> str | None:
                 )
             },
         )
-        if resp.status_code == 403:
-            logger.warning("LinkedIn CDN image returned 403: %s", url)
+        if resp.status_code != 200 or not resp.content:
+            logger.warning(
+                "LinkedIn CDN image download failed (HTTP %s): %s",
+                resp.status_code,
+                cdn_url_for_log(url),
+            )
             return None
-        if resp.status_code == 200 and resp.content:
-            local_path.write_bytes(resp.content)
-            return f"images/{filename}"
-        logger.warning(
-            "LinkedIn CDN image download failed (HTTP %s): %s",
-            resp.status_code,
-            url,
-        )
+        content = resp.content
+        if len(content) > _MAX_IMAGE_BYTES:
+            logger.warning(
+                "LinkedIn CDN image too large (%d bytes): %s",
+                len(content),
+                cdn_url_for_log(url),
+            )
+            return None
+        suffix = _image_suffix_from_bytes(content, resp.headers.get("Content-Type", ""))
+        if suffix != ".jpg":
+            filename = f"{url_hash}{suffix}"
+            local_path = images_dir / filename
+            if local_path.is_file() and local_path.stat().st_size > 0:
+                return f"images/{filename}"
+        tmp_path = local_path.with_name(f".{filename}.part")
+        tmp_path.write_bytes(content)
+        tmp_path.replace(local_path)
+        return f"images/{filename}"
     except Exception as exc:
-        logger.warning("LinkedIn CDN image download error: %s (%s)", url, exc)
+        logger.warning(
+            "LinkedIn CDN image download error: %s (%s)",
+            cdn_url_for_log(url),
+            exc,
+        )
     return None
 
 
