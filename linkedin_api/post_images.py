@@ -374,7 +374,6 @@ def apply_post_image_sidecar(
 
     meta_records: list[dict[str, Any]] = []
     embed_targets: list[str] = []
-    identities_with_local: set[str] = set()
 
     for image_url in unique_urls:
         ident = cdn_url_identity(image_url)
