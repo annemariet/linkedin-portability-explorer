@@ -8,7 +8,6 @@ Securely stores your token in the system keyring so you only enter it once.
 import sys
 import getpass
 import os
-from datetime import datetime, timezone
 
 try:
     import dotenv
@@ -26,7 +25,6 @@ except ImportError:
 
 
 from linkedin_api.utils.auth import get_access_token
-from linkedin_api.utils.token_lifecycle import store_issued_at_now
 
 
 def main():
@@ -77,9 +75,7 @@ def main():
     print(f"\n💾 Storing token in keyring... (length: {len(token)})")
     try:
         keyring.set_password(SERVICE, ACCOUNT, token)
-        store_issued_at_now(ACCOUNT or "")
-        today = datetime.now(timezone.utc).date().isoformat()
-        print(f"✅ Token stored successfully! (issued_at recorded: {today})")
+        print("✅ Token stored successfully!")
         print("\n📌 Your token is now securely stored in your system keyring.")
         print(
             "   (macOS: Keychain, Windows: Credential Manager, Linux: Secret Service)"

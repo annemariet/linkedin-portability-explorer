@@ -42,13 +42,9 @@ scalingo --app my-linkedin-graphrag env-set NEO4J_DATABASE="neo4j"
 
 # LinkedIn Portability API (pipeline / fetch)
 scalingo --app my-linkedin-graphrag env-set LINKEDIN_ACCESS_TOKEN="your-token"
-# App credentials — enables automatic expiry via LinkedIn introspectToken (preferred)
+# App credentials — required for expiry warnings (LinkedIn introspectToken)
 scalingo --app my-linkedin-graphrag env-set LINKEDIN_CLIENT_ID="your-app-client-id"
 scalingo --app my-linkedin-graphrag env-set LINKEDIN_CLIENT_SECRET="your-app-client-secret"
-# Fallback if introspection is unavailable: manual issued date (YYYY-MM-DD)
-# scalingo --app my-linkedin-graphrag env-set LINKEDIN_ACCESS_TOKEN_ISSUED_AT="2026-10-08"
-# Optional: override estimated expiry (YYYY-MM-DD)
-# scalingo --app my-linkedin-graphrag env-set LINKEDIN_ACCESS_TOKEN_EXPIRES_AT="2026-12-07"
 # Optional: verify token on web boot (extra API call)
 # scalingo --app my-linkedin-graphrag env-set LINKEDIN_TOKEN_PROBE_ON_STARTUP=1
 
@@ -175,7 +171,7 @@ Visit `http://localhost:7860` to test the interface.
 - **Scheduler:** `cron.json` runs `uv run linkedin-check-token --warn-exit-code` daily (exit `2` in the 14-day warning window, `1` on hard failure). Wire Scalingo notifications to non-zero scheduler exits if desired.
 - **Manual check:** `uv run linkedin-check-token --probe-api`
 
-With `LINKEDIN_CLIENT_ID` + `LINKEDIN_CLIENT_SECRET`, expiry is read from LinkedIn introspection (`expires_at`). When you only change `LINKEDIN_ACCESS_TOKEN` and redeploy, the app logs `linkedin_access_token_rotated` (fingerprint under `LINKEDIN_DATA_DIR`) and re-introspects the new token — no manual date env vars required.
+With `LINKEDIN_CLIENT_ID` + `LINKEDIN_CLIENT_SECRET`, expiry warnings use LinkedIn introspection (`expires_at`). Without those credentials there is no expiry warning (same as before). When you change `LINKEDIN_ACCESS_TOKEN` and redeploy, the app logs `linkedin_access_token_rotated` (fingerprint under `LINKEDIN_DATA_DIR`) and re-introspects the new token.
 
 ## Monitoring
 

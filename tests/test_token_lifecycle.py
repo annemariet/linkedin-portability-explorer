@@ -1,40 +1,48 @@
-"""Tests for LinkedIn token expiry estimation."""
+"""Tests for LinkedIn token expiry (introspection only)."""
 
 from datetime import date
 
 from linkedin_api.utils.token_lifecycle import (
     TokenExpiryLevel,
     assess_token_expiry,
-    read_expires_at,
 )
 
 
+def _intro(**kwargs):
+    defaults = {
+        "active": True,
+        "status": "active",
+        "expires_on": None,
+        "issued_on": None,
+        "scope": None,
+    }
+    defaults.update(kwargs)
+    return type("I", (), defaults)()
+
+
 class TestTokenLifecycle:
-    def test_warn_when_within_window(self, monkeypatch):
-        monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN_ISSUED_AT", "2026-09-01")
+    def test_warn_when_within_window(self):
         status = assess_token_expiry(
-            warn_days=14,
-            lifetime_days=60,
             today=date(2026, 10, 20),
+            introspection=_intro(expires_on=date(2026, 11, 1)),
+            warn_days=14,
         )
         assert status.level == TokenExpiryLevel.WARN
-        assert status.days_remaining == 11
 
-    def test_expired_when_past_lifetime(self, monkeypatch):
-        monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN_ISSUED_AT", "2026-07-01")
+    def test_expired_from_introspection_date(self):
         status = assess_token_expiry(
-            lifetime_days=60,
             today=date(2026, 10, 8),
+            introspection=_intro(expires_on=date(2026, 10, 1)),
         )
         assert status.level == TokenExpiryLevel.EXPIRED
 
-    def test_explicit_expires_at_overrides(self, monkeypatch):
-        monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN_EXPIRES_AT", "2026-12-01")
-        expires = read_expires_at(date(2026, 1, 1))
-        assert expires == date(2026, 12, 1)
+    def test_unknown_without_introspection(self):
+        status = assess_token_expiry(access_token=None, introspection=None)
+        assert status.level == TokenExpiryLevel.UNKNOWN
+        assert status.message == ""
 
-    def test_unknown_without_metadata(self, monkeypatch):
-        monkeypatch.delenv("LINKEDIN_ACCESS_TOKEN_ISSUED_AT", raising=False)
-        monkeypatch.delenv("LINKEDIN_ACCESS_TOKEN_EXPIRES_AT", raising=False)
-        status = assess_token_expiry(today=date(2026, 10, 8))
+    def test_unknown_when_introspection_has_no_expires_at(self):
+        status = assess_token_expiry(
+            introspection=_intro(expires_on=None),
+        )
         assert status.level == TokenExpiryLevel.UNKNOWN

@@ -1,11 +1,10 @@
-"""LinkedIn access token expiry estimation and proactive warnings."""
+"""LinkedIn access token expiry from OAuth introspection only."""
 
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -14,21 +13,9 @@ from linkedin_api.utils.token_introspection import (
     introspect_access_token,
 )
 
-try:
-    import keyring
-except ImportError:
-    keyring = None  # type: ignore[assignment]
-
 logger = logging.getLogger(__name__)
 
-# Member Data Portability tokens are valid ~60 days (LinkedIn docs / operator practice).
-DEFAULT_TOKEN_LIFETIME_DAYS = 60
 DEFAULT_WARN_DAYS_BEFORE_EXPIRY = 14
-
-_ISSUED_AT_ENV = "LINKEDIN_ACCESS_TOKEN_ISSUED_AT"
-_EXPIRES_AT_ENV = "LINKEDIN_ACCESS_TOKEN_EXPIRES_AT"
-_KEYRING_SERVICE = "LINKEDIN_ACCESS_TOKEN"
-_KEYRING_ISSUED_ACCOUNT_SUFFIX = "#issued_at"
 
 
 class TokenExpiryLevel(str, Enum):
@@ -46,138 +33,49 @@ class TokenExpiryStatus:
     message: str
 
 
-def _parse_date(value: str) -> Optional[date]:
-    text = value.strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        if "T" in text:
-            return datetime.fromisoformat(text).date()
-        return date.fromisoformat(text)
-    except ValueError:
-        return None
-
-
-def _issued_at_keyring_account(linkedin_account: str) -> str:
-    base = linkedin_account or "default"
-    return f"{base}{_KEYRING_ISSUED_ACCOUNT_SUFFIX}"
-
-
-def read_issued_at(
-    linkedin_account: str = "",
-) -> Optional[date]:
-    env_val = os.getenv(_ISSUED_AT_ENV)
-    if env_val:
-        parsed = _parse_date(env_val)
-        if parsed:
-            return parsed
-
-    if keyring is None:
-        return None
-    try:
-        stored = keyring.get_password(
-            _KEYRING_SERVICE, _issued_at_keyring_account(linkedin_account)
-        )
-        if stored:
-            return _parse_date(stored)
-    except Exception:
-        return None
-    return None
-
-
-def read_expires_at(
-    issued_at: Optional[date],
-    *,
-    lifetime_days: int = DEFAULT_TOKEN_LIFETIME_DAYS,
-) -> Optional[date]:
-    env_val = os.getenv(_EXPIRES_AT_ENV)
-    if env_val:
-        parsed = _parse_date(env_val)
-        if parsed:
-            return parsed
-    if issued_at is None:
-        return None
-    return issued_at + timedelta(days=lifetime_days)
-
-
-def store_issued_at_now(linkedin_account: str = "") -> None:
-    today = datetime.now(timezone.utc).date().isoformat()
-    if keyring is None:
-        return
-    keyring.set_password(
-        _KEYRING_SERVICE,
-        _issued_at_keyring_account(linkedin_account),
-        today,
-    )
-
-
-def _expiry_from_introspection(
-    intro: TokenIntrospection,
-    *,
-    lifetime_days: int,
-) -> Optional[date]:
-    if intro.expires_on is not None:
-        return intro.expires_on
-    if intro.issued_on is not None:
-        return intro.issued_on + timedelta(days=lifetime_days)
-    return None
-
-
 def assess_token_expiry(
     *,
     access_token: Optional[str] = None,
     warn_days: int = DEFAULT_WARN_DAYS_BEFORE_EXPIRY,
-    lifetime_days: int = DEFAULT_TOKEN_LIFETIME_DAYS,
-    linkedin_account: str = "",
     today: Optional[date] = None,
     introspection: Optional[TokenIntrospection] = None,
 ) -> TokenExpiryStatus:
-    """Expiry from LinkedIn introspection, env metadata, or issued_at estimate."""
+    """Expiry warnings only when LinkedIn introspection returns expires_at."""
     ref = today or datetime.now(timezone.utc).date()
 
     intro = introspection
     if intro is None and access_token:
         intro = introspect_access_token(access_token)
 
-    if intro is not None:
-        if intro.status in ("expired", "revoked") or not intro.active:
-            ref_expiry = intro.expires_on or ref
-            days_remaining = (ref_expiry - ref).days
-            return TokenExpiryStatus(
-                level=TokenExpiryLevel.EXPIRED,
-                days_remaining=days_remaining,
-                expires_on=intro.expires_on,
-                message=(
-                    f"LinkedIn reports token status={intro.status or 'inactive'} "
-                    f"(introspection). Renew at "
-                    "https://www.linkedin.com/developers/tools/oauth"
-                ),
-            )
+    if intro is None:
+        return TokenExpiryStatus(
+            level=TokenExpiryLevel.UNKNOWN,
+            days_remaining=None,
+            expires_on=None,
+            message="",
+        )
 
-    issued_at: Optional[date] = read_issued_at(linkedin_account)
-    if intro is not None and intro.issued_on is not None and issued_at is None:
-        issued_at = intro.issued_on
+    if intro.status in ("expired", "revoked") or not intro.active:
+        ref_expiry = intro.expires_on or ref
+        days_remaining = (ref_expiry - ref).days
+        return TokenExpiryStatus(
+            level=TokenExpiryLevel.EXPIRED,
+            days_remaining=days_remaining,
+            expires_on=intro.expires_on,
+            message=(
+                f"LinkedIn reports token status={intro.status or 'inactive'} "
+                f"(introspection). Renew at "
+                "https://www.linkedin.com/developers/tools/oauth"
+            ),
+        )
 
-    expires: Optional[date] = read_expires_at(None, lifetime_days=lifetime_days)
-    if expires is None and intro is not None and intro.expires_on is not None:
-        expires = intro.expires_on
-    if expires is None:
-        expires = read_expires_at(issued_at, lifetime_days=lifetime_days)
-    if expires is None and intro is not None:
-        expires = _expiry_from_introspection(intro, lifetime_days=lifetime_days)
-
+    expires = intro.expires_on
     if expires is None:
         return TokenExpiryStatus(
             level=TokenExpiryLevel.UNKNOWN,
             days_remaining=None,
             expires_on=None,
-            message=(
-                "LinkedIn token expiry unknown — set LINKEDIN_CLIENT_ID and "
-                "LINKEDIN_CLIENT_SECRET for automatic introspection, or set "
-                f"{_ISSUED_AT_ENV} (YYYY-MM-DD) when you rotate the token."
-            ),
+            message="",
         )
 
     days_remaining = (expires - ref).days
@@ -187,9 +85,8 @@ def assess_token_expiry(
             days_remaining=days_remaining,
             expires_on=expires,
             message=(
-                f"LinkedIn access token is past estimated expiry ({expires.isoformat()}). "
-                "Renew at https://www.linkedin.com/developers/tools/oauth and update "
-                f"{_ISSUED_AT_ENV} / LINKEDIN_ACCESS_TOKEN on Scalingo."
+                f"LinkedIn access token expired on {expires.isoformat()}. "
+                "Renew at https://www.linkedin.com/developers/tools/oauth"
             ),
         )
     if days_remaining <= warn_days:
@@ -198,27 +95,26 @@ def assess_token_expiry(
             days_remaining=days_remaining,
             expires_on=expires,
             message=(
-                f"LinkedIn access token estimated to expire on {expires.isoformat()} "
+                f"LinkedIn access token expires on {expires.isoformat()} "
                 f"({days_remaining} day(s) remaining). Renew before deactivation."
             ),
         )
-    source = "introspection" if intro and intro.expires_on else "metadata"
     return TokenExpiryStatus(
         level=TokenExpiryLevel.OK,
         days_remaining=days_remaining,
         expires_on=expires,
         message=(
-            f"LinkedIn token OK ({source}) — expiry {expires.isoformat()} "
+            f"LinkedIn token OK — expires {expires.isoformat()} "
             f"({days_remaining} day(s) remaining)."
         ),
     )
 
 
 def log_token_expiry_status(status: TokenExpiryStatus) -> None:
+    if status.level == TokenExpiryLevel.UNKNOWN:
+        return
     if status.level == TokenExpiryLevel.OK:
         logger.info("linkedin_token_expiry %s", status.message)
-    elif status.level == TokenExpiryLevel.UNKNOWN:
-        logger.warning("linkedin_token_expiry %s", status.message)
     elif status.level == TokenExpiryLevel.WARN:
         logger.warning("linkedin_token_expiry %s", status.message)
     else:

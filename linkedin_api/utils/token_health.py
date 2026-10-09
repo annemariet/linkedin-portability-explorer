@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -74,7 +73,6 @@ def _probe_token_api(
 def build_token_health_report(
     *,
     probe_api: bool = False,
-    linkedin_account: str = "",
 ) -> TokenHealthReport:
     retrieval = retrieve_secret(log_scalingo_alerts=True)
     messages: list[str] = []
@@ -100,20 +98,17 @@ def build_token_health_report(
         )
 
     detect_token_rotation(retrieval.value)
-    expiry = assess_token_expiry(
-        access_token=retrieval.value,
-        linkedin_account=linkedin_account,
-    )
-    messages.append(expiry.message)
+    expiry = assess_token_expiry(access_token=retrieval.value)
 
     api_valid: Optional[bool] = None
     level = TokenHealthLevel.OK
 
+    if expiry.level != TokenExpiryLevel.UNKNOWN and expiry.message:
+        messages.append(expiry.message)
+
     if expiry.level == TokenExpiryLevel.EXPIRED:
         level = TokenHealthLevel.ERROR
     elif expiry.level == TokenExpiryLevel.WARN:
-        level = TokenHealthLevel.WARN
-    elif expiry.level == TokenExpiryLevel.UNKNOWN:
         level = TokenHealthLevel.WARN
 
     if probe_api:
@@ -134,8 +129,7 @@ def build_token_health_report(
 
 def log_startup_token_health(probe_api: bool = False) -> TokenHealthReport:
     """Log token retrieval, expiry, and optional API probe (Gradio / web boot)."""
-    account = os.getenv("LINKEDIN_ACCOUNT", "")
-    report = build_token_health_report(probe_api=probe_api, linkedin_account=account)
+    report = build_token_health_report(probe_api=probe_api)
 
     for msg in report.messages:
         if report.level == TokenHealthLevel.ERROR:
@@ -147,11 +141,7 @@ def log_startup_token_health(probe_api: bool = False) -> TokenHealthReport:
 
     if report.retrieval_issue == SecretRetrievalIssue.OK:
         token = get_access_token()
-        expiry = assess_token_expiry(
-            access_token=token,
-            linkedin_account=account,
-        )
-        log_token_expiry_status(expiry)
+        log_token_expiry_status(assess_token_expiry(access_token=token))
 
     return report
 
@@ -161,10 +151,7 @@ def ensure_token_available_or_raise() -> str:
     token = get_access_token()
     if not token:
         raise ValueError("LINKEDIN_ACCESS_TOKEN not configured")
-    expiry = assess_token_expiry(
-        access_token=token,
-        linkedin_account=os.getenv("LINKEDIN_ACCOUNT", ""),
-    )
+    expiry = assess_token_expiry(access_token=token)
     if expiry.level == TokenExpiryLevel.EXPIRED:
         raise TokenExpiredError(expiry.message)
     return token
