@@ -386,7 +386,6 @@ def apply_post_image_sidecar(
         if local_rel and resolve_trusted_local_rel(local_rel, content_root):
             rec["local_path"] = local_rel
             embed_targets.append(local_rel)
-            identities_with_local.add(ident)
         else:
             embed_targets.append(image_url)
         meta_records.append(rec)
