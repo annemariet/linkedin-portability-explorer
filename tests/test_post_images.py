@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -249,6 +250,105 @@ def test_apply_sidecar_strips_malicious_local_embed(tmp_path, monkeypatch) -> No
     assert "passwd" not in body
     assert cdn in body
     assert len(meta) == 1
+
+
+def _v3_hash_rel(cdn_url: str) -> str:
+    h = hashlib.sha256(cdn_url.encode()).hexdigest()[:24]
+    return f"images/{h}.jpg"
+
+
+def _assert_three_image_main_style_state(
+    body: str,
+    images_meta: list[dict],
+    *,
+    cdn1: str,
+    cdn2: str,
+    cdn3: str,
+    local1_rel: str,
+) -> None:
+    assert local1_rel in body
+    assert cdn2 in body
+    assert cdn3 in body
+    assert body.count("![](https://") == 2
+    assert body.count("![](images/") == 1
+    assert len(images_meta) == 3
+    by_ident = {m["identity"]: m for m in images_meta}
+    assert by_ident[cdn_url_identity(cdn1)].get("local_path") == local1_rel
+    assert not by_ident[cdn_url_identity(cdn2)].get("local_path")
+    assert not by_ident[cdn_url_identity(cdn3)].get("local_path")
+
+
+def test_three_image_v3_only_first_local_survives_reenrich(
+    tmp_path, monkeypatch
+) -> None:
+    """Main-style store: 3 CDN images in meta, only image 1 on disk (v3 hash name)."""
+    monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
+    from linkedin_api.content_store import (
+        load_content,
+        load_metadata,
+        save_content,
+        save_metadata,
+    )
+    from linkedin_api.post_extraction import (
+        ENRICHMENT_VERSION,
+        PostExtractionResult,
+        save_extraction_to_store,
+    )
+
+    cdn1 = f"{_BASE}/photo-one/0?e=100&t=a"
+    cdn2 = f"{_BASE}/photo-two/0?e=100&t=b"
+    cdn3 = f"{_BASE}/photo-three/0?e=100&t=c"
+    local1 = _v3_hash_rel(cdn1)
+    images = tmp_path / "content" / "images"
+    images.mkdir(parents=True)
+    (images / Path(local1).name).write_bytes(b"img1-bytes")
+    save_content(
+        "77",
+        f"Post text.\n\n![]({local1})",
+        post_urn="urn:li:activity:77",
+    )
+    save_metadata(
+        "77",
+        post_urn="urn:li:activity:77",
+        enrichment_version=ENRICHMENT_VERSION,
+        images=[{"cdn_url": cdn1}, {"cdn_url": cdn2}, {"cdn_url": cdn3}],
+    )
+    ext = PostExtractionResult(
+        markdown_body="Updated post text from HTML.",
+        html_meta={},
+        urls=[],
+        mentions=[],
+        hashtags=[],
+        image_urls=[cdn1, cdn2, cdn3],
+    )
+
+    def run_enrich() -> None:
+        with patch("requests.get"):
+            save_extraction_to_store(
+                post_id="77",
+                post_urn="urn:li:activity:77",
+                post_url="https://www.linkedin.com/feed/update/urn:li:activity:77",
+                ext=ext,
+                urls_from_api=[],
+                activity_time_iso="2026-01-01T00:00:00Z",
+                post_created="2026-01-01T00:00:00Z",
+                activities_ids=["a"],
+            )
+
+    run_enrich()
+    body1 = load_content("77", post_urn="urn:li:activity:77")
+    meta1 = load_metadata("77", post_urn="urn:li:activity:77")["images"]
+    assert body1 is not None
+    _assert_three_image_main_style_state(
+        body1, meta1, cdn1=cdn1, cdn2=cdn2, cdn3=cdn3, local1_rel=local1
+    )
+    run_enrich()
+    body2 = load_content("77", post_urn="urn:li:activity:77")
+    meta2 = load_metadata("77", post_urn="urn:li:activity:77")["images"]
+    assert body2 == body1
+    _assert_three_image_main_style_state(
+        body2, meta2, cdn1=cdn1, cdn2=cdn2, cdn3=cdn3, local1_rel=local1
+    )
 
 
 def test_legacy_v3_rel_maps_full_cdn_url(tmp_path) -> None:

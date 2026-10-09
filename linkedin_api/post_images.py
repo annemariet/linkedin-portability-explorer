@@ -272,20 +272,6 @@ def image_ref_looks_unsafe(rel: str) -> bool:
     return False
 
 
-def find_trusted_local_embeds(markdown: str, content_root: Path) -> list[str]:
-    if not markdown:
-        return []
-    out: list[str] = []
-    seen: set[str] = set()
-    for match in LOCAL_IMAGE_EMBED_RE.finditer(markdown):
-        rel = match.group(1)
-        trusted = resolve_trusted_local_rel(rel, content_root)
-        if trusted and trusted not in seen:
-            seen.add(trusted)
-            out.append(trusted)
-    return out
-
-
 def strip_linkedin_cdn_image_embeds(markdown: str) -> str:
     """Remove ``![](https://…licdn…/dms/image/…)`` embeds before sidecar re-append."""
 
@@ -339,10 +325,6 @@ def build_identity_local_map(
             legacy = legacy_v3_local_rel_for_cdn_url(cdn, content_root)
             if legacy:
                 local_by_ident[cdn_url_identity(cdn)] = legacy
-    trusted = find_trusted_local_embeds(existing_body or "", content_root)
-    if len(trusted) == 1:
-        for cdn in image_urls_from_metadata(existing_images):
-            local_by_ident.setdefault(cdn_url_identity(cdn), trusted[0])
     return local_by_ident
 
 
@@ -368,9 +350,6 @@ def apply_post_image_sidecar(
     )
 
     unique_urls = filter_post_image_urls(image_urls)
-    trusted_prior = find_trusted_local_embeds(existing_body or "", content_root)
-    if len(trusted_prior) == 1 and len(unique_urls) == 1:
-        local_by_ident.setdefault(cdn_url_identity(unique_urls[0]), trusted_prior[0])
 
     meta_records: list[dict[str, Any]] = []
     embed_targets: list[str] = []
@@ -389,10 +368,6 @@ def apply_post_image_sidecar(
         else:
             embed_targets.append(image_url)
         meta_records.append(rec)
-
-    for rel in trusted_prior:
-        if rel not in embed_targets:
-            embed_targets.append(rel)
 
     if embed_targets:
         body = _append_embeds(body, embed_targets)
