@@ -23,9 +23,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from linkedin_api.activity_csv import get_default_csv_path
+from linkedin_api.activity_csv import get_data_dir, get_default_csv_path
 from linkedin_api.enriched_record import EnrichedRecord
-from linkedin_api.activity_csv import get_data_dir
 from linkedin_api.content_store import (
     _ms_to_iso,
     download_image_to_store,
@@ -179,10 +178,12 @@ def _save_from_api_fallback(
         content_root = get_data_dir() / "content"
         prior_trusted = find_trusted_local_embeds(existing_body, content_root)
         cdn_urls = filter_linkedin_cdn_urls(api_urls)
+        prev_images = existing_meta.get("images")
         body, images_meta = apply_post_image_sidecar(
             body,
             cdn_urls,
             existing_body=existing_body,
+            existing_images=prev_images if isinstance(prev_images, list) else None,
             download=download_image_to_store,
         )
         degraded = not sidecar_still_has_trusted_embeds(

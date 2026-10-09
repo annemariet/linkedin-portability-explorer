@@ -30,6 +30,15 @@ https://media.licdn.com/dms/image/sync/v2/D4E27AQH{…}/articleshare-shrink_480/
 | CDN fetch fails (non-expired) | Metadata-only `cdn_url`; reuse trusted prior local if present |
 | CDN expired | Skip fetch; attach trusted prior local when available |
 
+## Identity limits (known)
+
+- **Host:** identity is `scheme + host + path`, so the same asset on `media.licdn.com` vs `media-exp1.licdn.com` is two entries (other `*.licdn.com` hosts are still downloaded when extraction lists them).
+- **Size variants:** two `shrink_*` paths for one visual are two identities and may download twice.
+
+## v3 → v4 migration
+
+v3 files used `sha256(full signed URL)`; v4 uses `sha256(path without query)`. Re-enrich reuses the v3 on-disk file when `meta.images` still has the old full URL (no second download, no orphan).
+
 ## Vault export (amai-lab)
 
-Catalog export copies `![](images/…)` only when the resolved file stays inside `content/images/` (see `linkedin_vault.vault_export`).
+Catalog export copies `![](images/…)` only when `resolve_trusted_local_rel` accepts the path (see `linkedin_vault.vault_export`).

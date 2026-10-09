@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 from linkedin_api.content_store import (
     download_image_to_store,
     load_content,
+    load_metadata,
     resolve_urls_for_metadata,
     save_comments,
     save_content,
@@ -307,10 +308,13 @@ def save_extraction_to_store(
     meta_urls = resolve_urls_for_metadata(u)
     body = append_missing_resource_urls(ext.markdown_body, meta_urls)
     existing_body = load_content(post_id, post_urn=post_urn)
+    existing_meta = load_metadata(post_id, post_urn=post_urn) or {}
+    prev_images = existing_meta.get("images")
     body, images_meta = apply_post_image_sidecar(
         body,
         ext.image_urls,
         existing_body=existing_body,
+        existing_images=prev_images if isinstance(prev_images, list) else None,
         download=download_image_to_store,
     )
 

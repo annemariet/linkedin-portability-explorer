@@ -28,6 +28,14 @@ from typing import Any, Optional, cast
 
 from linkedin_api.activity_csv import get_data_dir
 from linkedin_api.content_keys import content_stem, storage_key
+from linkedin_api.post_images import (
+    cdn_url_for_log,
+    cdn_url_identity,
+    cdn_url_is_expired,
+    image_suffix_for_valid_content,
+    is_image_content,
+    merge_image_meta_lists,
+)
 from linkedin_api.utils.urls import resolve_redirect, strip_utm_params
 
 logger = logging.getLogger(__name__)
@@ -81,28 +89,7 @@ def _images_dir() -> Path:
 
 
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
-
-
-def _image_suffix_from_bytes(content: bytes, content_type: str) -> str:
-    ct = (content_type or "").split(";", 1)[0].strip().lower()
-    by_ct = {
-        "image/jpeg": ".jpg",
-        "image/jpg": ".jpg",
-        "image/png": ".png",
-        "image/gif": ".gif",
-        "image/webp": ".webp",
-    }
-    if ct in by_ct:
-        return by_ct[ct]
-    if content.startswith(b"\xff\xd8\xff"):
-        return ".jpg"
-    if content.startswith(b"\x89PNG\r\n\x1a\n"):
-        return ".png"
-    if content.startswith(b"GIF87a") or content.startswith(b"GIF89a"):
-        return ".gif"
-    if len(content) >= 12 and content[0:4] == b"RIFF" and content[8:12] == b"WEBP":
-        return ".webp"
-    return ".jpg"
+_STREAM_CHUNK_SIZE = 64 * 1024
 
 
 def download_image_to_store(url: str) -> str | None:
@@ -113,12 +100,6 @@ def download_image_to_store(url: str) -> str | None:
     Filename hash uses the CDN URL path (query stripped). Skips expired
     signed URLs (``e=``) and logs CDN HTTP failures.
     """
-    from linkedin_api.post_images import (
-        cdn_url_for_log,
-        cdn_url_identity,
-        cdn_url_is_expired,
-    )
-
     try:
         import requests as _req
     except ImportError:
@@ -147,6 +128,7 @@ def download_image_to_store(url: str) -> str | None:
             url,
             timeout=15,
             allow_redirects=True,
+            stream=True,
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -154,22 +136,64 @@ def download_image_to_store(url: str) -> str | None:
                 )
             },
         )
-        if resp.status_code != 200 or not resp.content:
+        if resp.status_code != 200:
             logger.warning(
                 "LinkedIn CDN image download failed (HTTP %s): %s",
                 resp.status_code,
                 cdn_url_for_log(url),
             )
+            resp.close()
             return None
-        content = resp.content
-        if len(content) > _MAX_IMAGE_BYTES:
+        content_length = resp.headers.get("Content-Length")
+        if content_length:
+            try:
+                if int(content_length) > _MAX_IMAGE_BYTES:
+                    logger.warning(
+                        "LinkedIn CDN image too large (Content-Length %s): %s",
+                        content_length,
+                        cdn_url_for_log(url),
+                    )
+                    resp.close()
+                    return None
+            except ValueError:
+                pass
+        chunks: list[bytes] = []
+        size = 0
+        content_type = resp.headers.get("Content-Type", "")
+        for chunk in resp.iter_content(chunk_size=_STREAM_CHUNK_SIZE):
+            if not chunk:
+                continue
+            size += len(chunk)
+            if size > _MAX_IMAGE_BYTES:
+                logger.warning(
+                    "LinkedIn CDN image too large (%d bytes): %s",
+                    size,
+                    cdn_url_for_log(url),
+                )
+                resp.close()
+                return None
+            chunks.append(chunk)
+        resp.close()
+        content = b"".join(chunks)
+        if not content:
             logger.warning(
-                "LinkedIn CDN image too large (%d bytes): %s",
-                len(content),
+                "LinkedIn CDN image download empty body: %s",
                 cdn_url_for_log(url),
             )
             return None
-        suffix = _image_suffix_from_bytes(content, resp.headers.get("Content-Type", ""))
+        if not is_image_content(content, content_type):
+            logger.warning(
+                "LinkedIn CDN image rejected (not image bytes): %s",
+                cdn_url_for_log(url),
+            )
+            return None
+        suffix = image_suffix_for_valid_content(content, content_type)
+        if suffix is None:
+            logger.warning(
+                "LinkedIn CDN image rejected (unknown image type): %s",
+                cdn_url_for_log(url),
+            )
+            return None
         if suffix != ".jpg":
             filename = f"{url_hash}{suffix}"
             local_path = images_dir / filename
@@ -183,7 +207,7 @@ def download_image_to_store(url: str) -> str | None:
         logger.warning(
             "LinkedIn CDN image download error: %s (%s)",
             cdn_url_for_log(url),
-            exc,
+            type(exc).__name__,
         )
     return None
 
@@ -475,8 +499,6 @@ def save_metadata(
         prev_hashtags if isinstance(prev_hashtags, list) else None,
         meta.get("hashtags") if isinstance(meta.get("hashtags"), list) else None,
     )
-    from linkedin_api.post_images import merge_image_meta_lists
-
     prev_images = existing.get("images")
     inc_images = meta.get("images")
     meta["images"] = merge_image_meta_lists(
