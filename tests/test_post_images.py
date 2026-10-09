@@ -71,7 +71,7 @@ def test_apply_sidecar_ignores_malicious_embed_in_new_body(
         assert url == cdn
         return "images/good.jpg"
 
-    body, meta = apply_post_image_sidecar(
+    body, meta, _ = apply_post_image_sidecar(
         "Author text\n\n![](images/../../../../../etc/hostname)",
         [cdn],
         existing_body="",
@@ -102,7 +102,7 @@ def test_apply_sidecar_handles_all_cdn_urls(tmp_path, monkeypatch) -> None:
         (images / name).write_bytes(b"x")
         return f"images/{name}"
 
-    body, meta = apply_post_image_sidecar(
+    body, meta, _ = apply_post_image_sidecar(
         "Post",
         urls,
         existing_body="",
@@ -363,3 +363,125 @@ def test_apply_sidecar_downloads_non_licdn_hosts(tmp_path, monkeypatch) -> None:
         download=_fake_download,
     )
     assert seen == [url]
+
+
+def test_filter_post_image_urls_skips_static_licdn_placeholder() -> None:
+    from linkedin_api.post_images import filter_post_image_urls
+
+    placeholder = "https://static.licdn.com/scds/common/u/images/logos/linkedin/logo-in-win8-tile-80.png"
+    real = "https://media.licdn.com/dms/image/v2/example/0?e=2147483647&t=x"
+    assert filter_post_image_urls([placeholder, real]) == [real]
+
+
+def test_fallback_fresh_cdn_sets_local_path_and_v4(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
+    from linkedin_api.content_store import load_metadata, save_content, save_metadata
+    from linkedin_api.enrich_activities import _save_from_api_fallback
+    from linkedin_api.enriched_record import EnrichedRecord
+    from linkedin_api.enrich_activities import EnrichmentTelemetry
+    from linkedin_api.post_extraction import ENRICHMENT_VERSION
+
+    base = "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
+    cdn = f"{base}?e=2147483647&v=beta&t=fresh"
+    legacy_rel = legacy_v3_image_rel(cdn)
+    images = tmp_path / "content" / "images"
+    images.mkdir(parents=True)
+    (tmp_path / "content" / legacy_rel).write_bytes(b"v3")
+
+    save_content(
+        "88",
+        "CSV body " + ("x" * 50) + f"\n\n![]({legacy_rel})",
+        post_urn="urn:li:activity:88",
+    )
+    save_metadata(
+        "88",
+        post_urn="urn:li:activity:88",
+        enrichment_version=3,
+        images=[cdn],
+    )
+
+    rec = EnrichedRecord(
+        post_urn="urn:li:activity:88",
+        post_url="https://www.linkedin.com/feed/update/urn:li:activity:88",
+        content="CSV body " + ("z" * 50),
+        urls=[cdn],
+        interaction_type="post",
+        reaction_type=None,
+        comment_text="",
+        post_id="88",
+        activity_id="act",
+        timestamp=1,
+        created_at="",
+    )
+    _save_from_api_fallback(
+        rec,
+        "88",
+        "urn:li:activity:88",
+        rec.post_url,
+        None,
+        telemetry=EnrichmentTelemetry(),
+        reason="http_fail",
+    )
+    meta = load_metadata("88", post_urn="urn:li:activity:88")
+    assert meta is not None
+    assert meta["images"][0].get("local_path") == legacy_rel
+    assert meta.get("enrichment_version") == ENRICHMENT_VERSION
+
+
+def test_fallback_expired_cdn_keeps_v3_and_local(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
+    from linkedin_api.content_store import load_metadata, save_content, save_metadata
+    from linkedin_api.enrich_activities import _save_from_api_fallback
+    from linkedin_api.enriched_record import EnrichedRecord
+    from linkedin_api.enrich_activities import EnrichmentTelemetry
+
+    base = "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
+    v3_url = f"{base}?e=2147483647&v=beta&t=old"
+    expired = EXPIRED_CDN_FIXTURE_URL
+    legacy_rel = legacy_v3_image_rel(v3_url)
+    images = tmp_path / "content" / "images"
+    images.mkdir(parents=True)
+    (tmp_path / "content" / legacy_rel).write_bytes(b"keep")
+
+    save_content(
+        "77",
+        "CSV body " + ("x" * 50) + f"\n\n![]({legacy_rel})",
+        post_urn="urn:li:activity:77",
+    )
+    save_metadata(
+        "77",
+        post_urn="urn:li:activity:77",
+        enrichment_version=3,
+        images=[v3_url],
+    )
+
+    rec = EnrichedRecord(
+        post_urn="urn:li:activity:77",
+        post_url="https://www.linkedin.com/feed/update/urn:li:activity:77",
+        content="CSV body " + ("y" * 50),
+        urls=[expired],
+        interaction_type="post",
+        reaction_type=None,
+        comment_text="",
+        post_id="77",
+        activity_id="act",
+        timestamp=1,
+        created_at="",
+    )
+    with patch("linkedin_api.post_extraction.download_image_to_store") as mock_dl:
+        _save_from_api_fallback(
+            rec,
+            "77",
+            "urn:li:activity:77",
+            rec.post_url,
+            None,
+            telemetry=EnrichmentTelemetry(),
+            reason="http_fail",
+        )
+        mock_dl.assert_not_called()
+
+    meta = load_metadata("77", post_urn="urn:li:activity:77")
+    assert meta is not None
+    assert meta.get("enrichment_version") == 3
+    assert meta["images"][0].get("local_path") == legacy_rel
+    assert (images / legacy_rel.split("/")[-1]).read_bytes() == b"keep"

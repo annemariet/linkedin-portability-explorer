@@ -310,6 +310,20 @@ def _append_local_embeds(body: str, local_rels: list[str]) -> str:
     return body
 
 
+def is_linkedin_generic_placeholder_image(url: str) -> bool:
+    """LinkedIn UI placeholders (e.g. static ghost / logo assets), not post photos."""
+    parsed = urlparse((url or "").strip())
+    host = (parsed.netloc or "").lower()
+    path = (parsed.path or "").lower()
+    if host == "static.licdn.com":
+        return True
+    if "/scds/common/u/" in path:
+        return True
+    if "ghost" in path and "image" in path:
+        return True
+    return False
+
+
 def filter_post_image_urls(urls: list[str]) -> list[str]:
     """De-duplicated HTTPS image URLs from extraction (all hosts), by path identity."""
     out: list[str] = []
@@ -317,6 +331,8 @@ def filter_post_image_urls(urls: list[str]) -> list[str]:
     for raw in urls:
         url = (raw or "").strip()
         if not url.startswith("https://"):
+            continue
+        if is_linkedin_generic_placeholder_image(url):
             continue
         ident = cdn_url_identity(url)
         if ident in seen:
@@ -342,7 +358,7 @@ def apply_post_image_sidecar(
     existing_body: str | None,
     existing_images: list[Any] | None = None,
     download: Callable[[str], str | None],
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, Any]], bool]:
     """
     Attach post images to sidecar markdown + metadata.
 
@@ -358,10 +374,13 @@ def apply_post_image_sidecar(
     unique_urls = filter_post_image_urls(cdn_urls)
     trusted_prior = find_trusted_local_embeds(existing_body or "", content_root)
     if len(trusted_prior) == 1 and len(unique_urls) == 1:
-        reuse_map.setdefault(cdn_url_identity(unique_urls[0]), trusted_prior[0])
+        sole = unique_urls[0]
+        if not cdn_url_is_expired(sole):
+            reuse_map.setdefault(cdn_url_identity(sole), trusted_prior[0])
 
     meta_records: list[dict[str, Any]] = []
     local_embeds: list[str] = []
+    pipeline_complete = True
 
     for image_url in unique_urls:
         ident = cdn_url_identity(image_url)
@@ -382,6 +401,8 @@ def apply_post_image_sidecar(
             meta_records.append(rec)
             if local_rel:
                 local_embeds.append(local_rel)
+            else:
+                pipeline_complete = False
             continue
 
         local_rel = reuse_map.get(ident)
@@ -398,6 +419,7 @@ def apply_post_image_sidecar(
                 cdn_url_for_log(image_url),
             )
             meta_records.append(image_meta_record(image_url))
+            pipeline_complete = False
 
     for rel in trusted_prior:
         if rel not in local_embeds:
@@ -406,7 +428,104 @@ def apply_post_image_sidecar(
     if local_embeds:
         body = _append_local_embeds(body, local_embeds)
 
-    return body, meta_records
+    meta_records = reconcile_images_meta_with_body(
+        meta_records,
+        body,
+        existing_images=existing_images,
+        reuse_map=reuse_map,
+        content_root=content_root,
+    )
+
+    return body, meta_records, pipeline_complete
+
+
+def reconcile_images_meta_with_body(
+    records: list[dict[str, Any]],
+    body: str,
+    *,
+    existing_images: list[Any] | None,
+    reuse_map: dict[str, str],
+    content_root: Path,
+) -> list[dict[str, Any]]:
+    """Ensure ``meta.images`` documents every trusted local embed in *body*."""
+    merged: dict[str, dict[str, Any]] = {}
+    for rec in normalize_image_meta_list(records):
+        key = _meta_merge_key(rec)
+        if key:
+            merged[key] = dict(rec)
+
+    for rec in normalize_image_meta_list(existing_images):
+        key = _meta_merge_key(rec)
+        if not key or key in merged:
+            continue
+        cdn = _entry_cdn_url(rec)
+        ident = cdn_url_identity(cdn) if cdn.startswith("http") else ""
+        local = _entry_local_path(rec) or (reuse_map.get(ident) if ident else "")
+        if local and resolve_trusted_local_rel(local, content_root):
+            merged[key] = image_meta_record(cdn, local_path=local)
+        elif cdn:
+            merged[key] = image_meta_record(cdn)
+
+    for rec in merged.values():
+        cdn = _entry_cdn_url(rec)
+        if not cdn.startswith("http") or _entry_local_path(rec):
+            continue
+        ident = cdn_url_identity(cdn)
+        local = reuse_map.get(ident)
+        if local and resolve_trusted_local_rel(local, content_root):
+            rec["local_path"] = local
+
+    for rel in find_trusted_local_embeds(body, content_root):
+        if any(_entry_local_path(r) == rel for r in merged.values()):
+            continue
+        attached = False
+        for rec in merged.values():
+            cdn = _entry_cdn_url(rec)
+            if cdn.startswith("http") and not _entry_local_path(rec):
+                rec["local_path"] = rel
+                attached = True
+                break
+        if not attached:
+            merged[f"local:{rel}"] = {"cdn_url": "", "local_path": rel}
+
+    return list(merged.values())
+
+
+def enrichment_version_after_images(
+    images_meta: list[Any],
+    body: str,
+    content_root: Path,
+    *,
+    target_version: int,
+    prior_version: int,
+    image_pipeline_complete: bool = True,
+) -> int:
+    if not image_pipeline_complete:
+        return prior_version
+    if images_ready_for_enrichment_version(images_meta, body, content_root):
+        return target_version
+    return prior_version
+
+
+def images_ready_for_enrichment_version(
+    images_meta: list[Any],
+    body: str,
+    content_root: Path,
+) -> bool:
+    """
+    False when a CDN image has no ``local_path`` or a body embed is not in meta.
+
+    Used to avoid stamping ENRICHMENT_VERSION when images could not be stored.
+    """
+    embeds = find_trusted_local_embeds(body, content_root)
+    normalized = normalize_image_meta_list(images_meta)
+    for rec in normalized:
+        if _entry_cdn_url(rec).startswith("http") and not _entry_local_path(rec):
+            return False
+    for rel in embeds:
+        if not any(_entry_local_path(r) == rel for r in normalized):
+            return False
+    return True
 
 
 def sidecar_still_has_trusted_embeds(
