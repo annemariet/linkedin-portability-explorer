@@ -1,13 +1,9 @@
 """Tests for content_store module -- file-based content storage."""
 
-from unittest.mock import MagicMock, patch
-
 import pytest
 
-from linkedin_api.activity_csv import get_data_dir
 from linkedin_api.content_store import (
     content_path,
-    download_image_to_store,
     has_content,
     load_content,
     load_metadata,
@@ -379,61 +375,3 @@ class TestMentionsMerge:
         jane = next(m for m in meta["mentions"] if "jane" in m["url"])
         assert jane["type"] == "person"
         assert jane["name"] == "Jane Doe"
-
-
-class TestDownloadImageToStore:
-    def _mock_response(
-        self,
-        content: bytes = b"\xff\xd8\xff\xe0fake-jpeg-bytes",
-        status_code: int = 200,
-    ):
-        resp = MagicMock()
-        resp.status_code = status_code
-        resp.headers = {"Content-Type": "image/jpeg"}
-        resp.content = content
-        return resp
-
-    def test_downloads_to_content_dir(self):
-        with patch("requests.get", return_value=self._mock_response()):
-            path = download_image_to_store("https://cdn.example.com/photo.jpg")
-
-        assert path is not None
-        assert path.startswith("images/")
-        assert (get_data_dir() / "content" / path).exists()
-
-    def test_repeated_call_is_cached_not_refetched(self):
-        with patch("requests.get", return_value=self._mock_response()) as mock_get:
-            first = download_image_to_store("https://cdn.example.com/photo.jpg")
-            second = download_image_to_store("https://cdn.example.com/photo.jpg")
-
-        assert first == second
-        mock_get.assert_called_once()
-
-    def test_returns_none_on_http_error(self):
-        with patch("requests.get", return_value=self._mock_response(status_code=404)):
-            path = download_image_to_store("https://cdn.example.com/missing.jpg")
-
-        assert path is None
-
-    def test_returns_none_on_network_exception(self):
-        with patch("requests.get", side_effect=ConnectionError("timeout")):
-            path = download_image_to_store("https://cdn.example.com/photo.jpg")
-
-        assert path is None
-
-    def test_returns_none_for_empty_url(self):
-        assert download_image_to_store("") is None
-
-    def test_logs_never_include_signed_t_query(self, tmp_path, monkeypatch, caplog):
-        monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
-        url = "https://media.licdn.com/dms/image/v2/x/0?e=2147483647&v=beta&t=SECRET"
-        with patch(
-            "requests.get",
-            side_effect=ConnectionError(
-                "HTTPSConnectionPool(host='media.licdn.com'): "
-                "Max retries exceeded with url: /dms/image/v2/x/0?e=1&t=SECRET"
-            ),
-        ):
-            download_image_to_store(url)
-        assert "t=SECRET" not in caplog.text
-        assert "t=" not in caplog.text

@@ -19,7 +19,6 @@ Phase 3 metadata (summary, topics, etc.) stored as ``{post_id}.meta.json`` sidec
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -73,59 +72,6 @@ def save_content(
     path.write_text(text, encoding="utf-8")
     _register_post(stem, pu)
     return path
-
-
-def _images_dir() -> Path:
-    d = _content_dir() / "images"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def download_image_to_store(url: str) -> str | None:
-    """
-    Download *url* to ``content/images/`` (legacy helper; enrich does not call this).
-
-    Uses a URL-hash filename so repeated calls for the same URL are no-ops.
-    """
-    import urllib.parse
-
-    try:
-        import requests as _req
-    except ImportError:
-        return None
-
-    url = (url or "").strip()
-    if not url:
-        return None
-
-    images_dir = _images_dir()
-    url_hash = hashlib.sha256(url.encode()).hexdigest()[:24]
-    parsed = urllib.parse.urlparse(url)
-    suffix = Path(parsed.path).suffix.lower()
-    if suffix not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
-        suffix = ".jpg"
-    filename = f"{url_hash}{suffix}"
-    local_path = images_dir / filename
-    if local_path.exists():
-        return f"images/{filename}"
-    try:
-        resp = _req.get(
-            url,
-            timeout=15,
-            allow_redirects=True,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-            },
-        )
-        if resp.status_code == 200 and resp.content:
-            local_path.write_bytes(resp.content)
-            return f"images/{filename}"
-    except Exception:
-        pass
-    return None
 
 
 def _comments_path(post_id: str = "", *, post_urn: str = "") -> Path:

@@ -12,7 +12,12 @@ from linkedin_api.content_store import (
     save_metadata,
 )
 from linkedin_api.enriched_record import EnrichedRecord
-from linkedin_api.enrich_activities import _run_enrichment, enrich_activities
+from linkedin_api.enrich_activities import (
+    EnrichmentTelemetry,
+    _run_enrichment,
+    _save_from_api_fallback,
+    enrich_activities,
+)
 from linkedin_api.post_extraction import append_missing_resource_urls
 from linkedin_api.utils.urls import is_comment_feed_url
 
@@ -259,3 +264,106 @@ class TestEnrichSavesTimestamps:
         assert count == 0
         assert telemetry.merge_noop == 1
         assert telemetry.total() == 1
+
+
+class TestApiFallbackPostImages:
+    @pytest.fixture(autouse=True)
+    def use_tmp_data_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
+
+    def test_fallback_post_body_keeps_cdn_not_resource_urls(self):
+        post_id = "55"
+        urn = f"urn:li:activity:{post_id}"
+        url = f"https://www.linkedin.com/feed/update/{urn}"
+        cdn = (
+            "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
+            "?e=2147483647&t=signed"
+        )
+        save_content(
+            post_id,
+            f"Prior text.\n\n![]({cdn})",
+            post_urn=urn,
+        )
+        save_metadata(
+            post_id,
+            post_urn=urn,
+            images=[{"cdn_url": cdn}],
+            enrichment_version=3,
+        )
+        api_body = (
+            "Long enough API body text here with resource links "
+            "https://github.com/foo/bar and https://example.com/article."
+        )
+        rec = EnrichedRecord(
+            post_urn=urn,
+            post_url=url,
+            content=api_body,
+            urls=["https://github.com/foo/bar"],
+            interaction_type="post",
+            reaction_type=None,
+            comment_text="",
+            post_id=post_id,
+            activity_id="a1",
+            timestamp=1,
+            created_at="",
+        )
+        telemetry = EnrichmentTelemetry()
+        assert _save_from_api_fallback(
+            rec,
+            post_id,
+            urn,
+            url,
+            "2026-01-01T00:00:00Z",
+            telemetry=telemetry,
+            reason="extract_fail",
+        )
+        body = load_content(post_id, post_urn=urn)
+        assert body is not None
+        assert cdn in body
+        assert "![](https://github.com" not in body
+        meta = load_metadata(post_id, post_urn=urn)
+        assert len(meta["images"]) == 1
+        assert "github.com" not in meta["images"][0]["cdn_url"]
+
+    def test_fallback_urls_only_does_not_rewrite_body(self):
+        post_id = "56"
+        urn = f"urn:li:activity:{post_id}"
+        url = f"https://www.linkedin.com/feed/update/{urn}"
+        cdn = (
+            "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
+            "?e=2147483647&t=signed"
+        )
+        prior = f"Short.\n\n![]({cdn})"
+        save_content(post_id, prior, post_urn=urn)
+        save_metadata(
+            post_id,
+            post_urn=urn,
+            images=[{"cdn_url": cdn}],
+            enrichment_version=3,
+        )
+        rec = EnrichedRecord(
+            post_urn=urn,
+            post_url=url,
+            content="",
+            urls=["https://github.com/foo/bar"],
+            interaction_type="reaction",
+            reaction_type="LIKE",
+            comment_text="",
+            post_id=post_id,
+            activity_id="a2",
+            timestamp=1,
+            created_at="",
+        )
+        telemetry = EnrichmentTelemetry()
+        assert _save_from_api_fallback(
+            rec,
+            post_id,
+            urn,
+            url,
+            None,
+            telemetry=telemetry,
+            reason="http_fail",
+        )
+        assert load_content(post_id, post_urn=urn) == prior
+        meta = load_metadata(post_id, post_urn=urn)
+        assert meta["images"][0]["cdn_url"] == cdn

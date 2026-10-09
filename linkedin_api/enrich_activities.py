@@ -35,7 +35,11 @@ from linkedin_api.content_store import (
     save_content,
     save_metadata,
 )
-from linkedin_api.post_images import apply_post_image_sidecar
+from linkedin_api.post_images import (
+    apply_post_image_sidecar,
+    image_urls_from_metadata,
+    merge_image_meta_lists,
+)
 from linkedin_api.http_client import fetch_linkedin_post_html
 from linkedin_api.post_extraction import (
     ENRICHMENT_VERSION,
@@ -170,13 +174,15 @@ def _save_from_api_fallback(
         existing_body = load_content(post_id, post_urn=post_urn) or ""
         existing_meta = load_metadata(post_id, post_urn=post_urn) or {}
         prev_images = existing_meta.get("images")
-        image_candidates = list(api_urls) + extract_urls_from_text(api_body)
+        prev_list = prev_images if isinstance(prev_images, list) else None
+        image_candidates = image_urls_from_metadata(prev_list)
         body, images_meta = apply_post_image_sidecar(
             body,
             image_candidates,
             existing_body=existing_body,
-            existing_images=prev_images if isinstance(prev_images, list) else None,
+            existing_images=prev_list,
         )
+        images_meta = merge_image_meta_lists(prev_list, images_meta)
         save_content(post_id, body, post_urn=post_urn)
         save_metadata(
             post_id,
@@ -208,20 +214,13 @@ def _save_from_api_fallback(
         existing_body = load_content(post_id, post_urn=post_urn) or ""
         existing_meta = load_metadata(post_id, post_urn=post_urn) or {}
         prev_images = existing_meta.get("images")
-        body, images_meta = apply_post_image_sidecar(
-            existing_body,
-            api_urls,
-            existing_body=existing_body,
-            existing_images=prev_images if isinstance(prev_images, list) else None,
-        )
-        if body != existing_body:
-            save_content(post_id, body, post_urn=post_urn)
+        prev_list = prev_images if isinstance(prev_images, list) else None
         save_metadata(
             post_id,
             urls=meta_urls,
             mentions=m,
             tags=t,
-            images=images_meta,
+            images=prev_list,
             post_url=url,
             post_author="",
             post_author_url="",

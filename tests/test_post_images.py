@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import hashlib
 from unittest.mock import patch
 
 import pytest
 
 from linkedin_api.post_images import (
-    EXPIRED_CDN_FIXTURE_URL,
     apply_post_image_sidecar,
-    cdn_url_for_log,
     cdn_url_identity,
-    cdn_url_is_expired,
     filter_post_image_urls,
+    is_linkedin_generic_placeholder_image,
+    is_linkedin_post_image_url,
+    legacy_v3_local_rel_for_cdn_url,
     merge_image_meta_lists,
     parse_linkedin_cdn_expires_at_unix,
     resolve_trusted_local_rel,
+    strip_linkedin_cdn_image_embeds,
+)
+
+EXPIRED_CDN_FIXTURE_URL = (
+    "https://media.licdn.com/dms/image/v2/fixture/0?e=1780668000&v=beta&t=fixture"
 )
 
 _BASE = "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
@@ -25,16 +30,18 @@ _BASE = "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
 def test_parse_linkedin_cdn_expires_at_unix() -> None:
     ts = parse_linkedin_cdn_expires_at_unix(EXPIRED_CDN_FIXTURE_URL)
     assert ts == 1780668000
-    assert cdn_url_is_expired(
-        EXPIRED_CDN_FIXTURE_URL,
-        now=datetime(2026, 10, 9, tzinfo=UTC),
-    )
 
 
-def test_cdn_url_for_log_strips_query() -> None:
-    url = f"{_BASE}?e=1&v=beta&t=SECRETTOKEN"
-    assert "t=" not in cdn_url_for_log(url)
-    assert "SECRET" not in cdn_url_for_log(url)
+def test_non_linkedin_identity_includes_query() -> None:
+    a = "https://cdn.example.com/img?id=1"
+    b = "https://cdn.example.com/img?id=2"
+    assert cdn_url_identity(a) != cdn_url_identity(b)
+
+
+def test_linkedin_identity_ignores_signed_query() -> None:
+    u1 = f"{_BASE}?e=1&t=a"
+    u2 = f"{_BASE}?e=2&t=b"
+    assert cdn_url_identity(u1) == cdn_url_identity(u2)
 
 
 def test_merge_image_meta_by_identity_not_query() -> None:
@@ -52,6 +59,23 @@ def test_resolve_trusted_local_rel_rejects_traversal(tmp_path) -> None:
         resolve_trusted_local_rel("images/../../../../../etc/hostname", content_root)
         is None
     )
+
+
+def test_resource_urls_not_treated_as_post_images() -> None:
+    github = "https://github.com/foo/bar"
+    article = "https://example.com/article"
+    real = f"{_BASE}?e=2147483647&t=x"
+    assert filter_post_image_urls([github, article, real]) == [real]
+    assert not is_linkedin_post_image_url(github)
+
+
+def test_strip_preserves_non_licdn_https_embeds() -> None:
+    other = "![](https://cdn.example.com/photo.png)"
+    licdn = f"![]({_BASE}?e=1&t=x)"
+    body = f"See {other} and {licdn}"
+    out = strip_linkedin_cdn_image_embeds(body)
+    assert "cdn.example.com/photo.png" in out
+    assert "media.licdn.com" not in out
 
 
 def test_enrich_embeds_cdn_urls_without_download(tmp_path, monkeypatch) -> None:
@@ -178,10 +202,40 @@ def test_reenrich_preserves_existing_local_embed(tmp_path, monkeypatch) -> None:
     assert (images / "keep.jpg").read_bytes() == b"local"
 
 
-def test_placeholder_skipped() -> None:
+def test_legacy_v3_local_only_one_embed_per_identity(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
+    content_root = tmp_path / "content"
+    images = content_root / "images"
+    images.mkdir(parents=True)
+    cdn1 = f"{_BASE}/a/0?e=2147483647&t=1"
+    cdn2 = f"{_BASE}/b/0?e=2147483647&t=2"
+    for cdn in (cdn1, cdn2):
+        h = hashlib.sha256(cdn.encode()).hexdigest()[:24]
+        (images / f"{h}.jpg").write_bytes(b"x")
+    body, _meta = apply_post_image_sidecar(
+        "Post",
+        [cdn1, cdn2],
+        existing_body="",
+        existing_images=[{"cdn_url": cdn1}, {"cdn_url": cdn2}],
+    )
+    assert body.count("![](images/") == 2
+    assert "media.licdn.com" not in body
+
+
+def test_placeholder_and_profile_logo_skipped() -> None:
     placeholder = "https://static.licdn.com/scds/common/u/images/logos/linkedin/logo-in-win8-tile-80.png"
+    logo = (
+        "https://media.licdn.com/dms/image/v2/C4E0BAQG/company-logo_200_200/0"
+        "?e=2147483647&t=x"
+    )
+    profile = (
+        "https://media.licdn.com/dms/image/v2/D4D03AQG/profile-displayphoto-shrink_100_100/0"
+        "?e=2147483647&t=x"
+    )
     real = f"{_BASE}?e=2147483647&t=x"
-    assert filter_post_image_urls([placeholder, real]) == [real]
+    assert is_linkedin_generic_placeholder_image(logo)
+    assert is_linkedin_generic_placeholder_image(profile)
+    assert filter_post_image_urls([placeholder, logo, profile, real]) == [real]
 
 
 def test_apply_sidecar_strips_malicious_local_embed(tmp_path, monkeypatch) -> None:
@@ -195,3 +249,14 @@ def test_apply_sidecar_strips_malicious_local_embed(tmp_path, monkeypatch) -> No
     assert "passwd" not in body
     assert cdn in body
     assert len(meta) == 1
+
+
+def test_legacy_v3_rel_maps_full_cdn_url(tmp_path) -> None:
+    content_root = tmp_path / "content"
+    images = content_root / "images"
+    images.mkdir(parents=True)
+    cdn = f"{_BASE}?e=1&t=old"
+    h = hashlib.sha256(cdn.encode()).hexdigest()[:24]
+    (images / f"{h}.jpg").write_bytes(b"data")
+    rel = legacy_v3_local_rel_for_cdn_url(cdn, content_root)
+    assert rel == f"images/{h}.jpg"
