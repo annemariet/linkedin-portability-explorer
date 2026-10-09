@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, cast
@@ -28,6 +29,8 @@ from typing import Any, Optional, cast
 from linkedin_api.activity_csv import get_data_dir
 from linkedin_api.content_keys import content_stem, storage_key
 from linkedin_api.utils.urls import resolve_redirect, strip_utm_params
+
+logger = logging.getLogger(__name__)
 
 
 def _content_dir() -> Path:
@@ -83,10 +86,11 @@ def download_image_to_store(url: str) -> str | None:
     content directory (e.g. ``"images/abc123.jpg"``) or ``None`` on failure.
 
     Uses a URL-hash filename so repeated calls for the same URL are no-ops.
-    LinkedIn CDN images have a very long expiry but downloading preserves them
-    offline and guards against future URL changes.
+    Skips expired signed URLs (``e=``) and logs CDN HTTP failures.
     """
     import urllib.parse
+
+    from linkedin_api.post_images import cdn_url_is_expired
 
     try:
         import requests as _req
@@ -95,6 +99,10 @@ def download_image_to_store(url: str) -> str | None:
 
     url = (url or "").strip()
     if not url:
+        return None
+
+    if cdn_url_is_expired(url):
+        logger.warning("Skipping expired LinkedIn CDN image download: %s", url)
         return None
 
     images_dir = _images_dir()
@@ -119,11 +127,19 @@ def download_image_to_store(url: str) -> str | None:
                 )
             },
         )
+        if resp.status_code == 403:
+            logger.warning("LinkedIn CDN image returned 403: %s", url)
+            return None
         if resp.status_code == 200 and resp.content:
             local_path.write_bytes(resp.content)
             return f"images/{filename}"
-    except Exception:
-        pass
+        logger.warning(
+            "LinkedIn CDN image download failed (HTTP %s): %s",
+            resp.status_code,
+            url,
+        )
+    except Exception as exc:
+        logger.warning("LinkedIn CDN image download error: %s (%s)", url, exc)
     return None
 
 
@@ -414,18 +430,14 @@ def save_metadata(
         prev_hashtags if isinstance(prev_hashtags, list) else None,
         meta.get("hashtags") if isinstance(meta.get("hashtags"), list) else None,
     )
+    from linkedin_api.post_images import merge_image_meta_lists
+
     prev_images = existing.get("images")
     inc_images = meta.get("images")
-    if isinstance(prev_images, list) and isinstance(inc_images, list):
-        meta["images"] = list(
-            dict.fromkeys(str(x) for x in prev_images + inc_images if x)
-        )
-    elif isinstance(inc_images, list):
-        meta["images"] = [str(x) for x in inc_images if x]
-    elif isinstance(prev_images, list):
-        meta["images"] = [str(x) for x in prev_images if x]
-    else:
-        meta["images"] = []
+    meta["images"] = merge_image_meta_lists(
+        prev_images if isinstance(prev_images, list) else None,
+        inc_images if isinstance(inc_images, list) else None,
+    )
     meta["post_url"] = post_url or meta.get("post_url") or ""
 
     prev_ids = existing.get("activities_ids") or []

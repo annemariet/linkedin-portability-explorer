@@ -20,11 +20,14 @@ from urllib.parse import urljoin
 from bs4 import BeautifulSoup
 
 from linkedin_api.content_store import (
+    download_image_to_store,
+    load_content,
     resolve_urls_for_metadata,
     save_comments,
     save_content,
     save_metadata,
 )
+from linkedin_api.post_images import apply_post_image_sidecar
 from linkedin_api.utils.post_html import (
     find_post_body_root,
     linkedin_http_fetch_is_blocked,
@@ -303,12 +306,13 @@ def save_extraction_to_store(
     )
     meta_urls = resolve_urls_for_metadata(u)
     body = append_missing_resource_urls(ext.markdown_body, meta_urls)
-
-    # Embed the first post image by CDN URL (no local content/images/ at enrich).
-    if ext.image_urls:
-        cdn_url = (ext.image_urls[0] or "").strip()
-        if cdn_url:
-            body = body.rstrip() + f"\n\n![]({cdn_url})"
+    existing_body = load_content(post_id, post_urn=post_urn)
+    body, images_meta = apply_post_image_sidecar(
+        body,
+        ext.image_urls,
+        existing_body=existing_body,
+        download=download_image_to_store,
+    )
 
     save_content(post_id, body, post_urn=post_urn)
     save_metadata(
@@ -316,7 +320,7 @@ def save_extraction_to_store(
         urls=meta_urls,
         mentions=m,
         hashtags=t,
-        images=ext.image_urls,
+        images=images_meta,
         post_url=post_url,
         post_author=ext.html_meta.get("post_author") or "",
         post_author_url=ext.html_meta.get("post_author_url") or "",
