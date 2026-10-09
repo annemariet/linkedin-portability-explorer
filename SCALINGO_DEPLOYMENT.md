@@ -15,6 +15,7 @@ This application is now deployable to Scalingo as a web application with a Gradi
 ## Files for Deployment
 
 - `Procfile` - Defines how Scalingo starts the web app
+- `cron.json` - Daily `linkedin-check-token --warn-exit-code` (Scalingo Scheduler)
 - `requirements.txt` - Python dependencies
 - `runtime.txt` - Python version
 - `linkedin_api/gradio_app.py` - Gradio web interface
@@ -38,6 +39,14 @@ scalingo --app my-linkedin-graphrag env-set NEO4J_URI="neo4j://your-host:7687"
 scalingo --app my-linkedin-graphrag env-set NEO4J_USERNAME="neo4j"
 scalingo --app my-linkedin-graphrag env-set NEO4J_PASSWORD="your-password"
 scalingo --app my-linkedin-graphrag env-set NEO4J_DATABASE="neo4j"
+
+# LinkedIn Portability API (pipeline / fetch)
+scalingo --app my-linkedin-graphrag env-set LINKEDIN_ACCESS_TOKEN="your-token"
+# App credentials — required for expiry warnings (LinkedIn introspectToken)
+scalingo --app my-linkedin-graphrag env-set LINKEDIN_CLIENT_ID="your-app-client-id"
+scalingo --app my-linkedin-graphrag env-set LINKEDIN_CLIENT_SECRET="your-app-client-secret"
+# Optional: verify token on web boot (extra API call)
+# scalingo --app my-linkedin-graphrag env-set LINKEDIN_TOKEN_PROBE_ON_STARTUP=1
 
 # Vertex AI Configuration
 scalingo --app my-linkedin-graphrag env-set EMBEDDING_MODEL="textembedding-gecko@002"
@@ -155,6 +164,15 @@ uv run python -m linkedin_api.gradio_app
 
 Visit `http://localhost:7860` to test the interface.
 
+## Token health
+
+- **Env wins on Scalingo:** `LINKEDIN_ACCESS_TOKEN` is read before keyring so container env matches production.
+- **Startup:** the Gradio app logs `linkedin_token_health` and `linkedin_token_expiry` on boot.
+- **Scheduler:** `cron.json` runs `uv run linkedin-check-token --warn-exit-code` daily (exit `2` in the 14-day warning window, `1` on hard failure). Wire Scalingo notifications to non-zero scheduler exits if desired.
+- **Manual check:** `uv run linkedin-check-token --probe-api`
+
+With `LINKEDIN_CLIENT_ID` + `LINKEDIN_CLIENT_SECRET`, expiry warnings use LinkedIn introspection (`expires_at`). Without those credentials there is no expiry warning (same as before). When you change `LINKEDIN_ACCESS_TOKEN` and redeploy, the app logs `linkedin_access_token_rotated` (fingerprint under `LINKEDIN_DATA_DIR`) and re-introspects the new token.
+
 ## Monitoring
 
 - Use Scalingo dashboard to monitor logs: `scalingo --app my-linkedin-graphrag logs -f`
@@ -172,6 +190,7 @@ scalingo --app my-linkedin-graphrag logs --lines 100
 
 Common issues:
 - Missing environment variables
+- `scalingo_secret_retrieval` / `linkedin_token_expiry` in logs — see **Token health** below
 - Neo4j connection failure
 - Vertex AI authentication issues
 - Missing vector index (run `index_content.py` first)
