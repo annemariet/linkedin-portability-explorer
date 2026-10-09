@@ -9,6 +9,11 @@ from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
 
+from linkedin_api.utils.token_introspection import (
+    TokenIntrospection,
+    introspect_access_token,
+)
+
 try:
     import keyring
 except ImportError:
@@ -108,17 +113,60 @@ def store_issued_at_now(linkedin_account: str = "") -> None:
     )
 
 
+def _expiry_from_introspection(
+    intro: TokenIntrospection,
+    *,
+    lifetime_days: int,
+) -> Optional[date]:
+    if intro.expires_on is not None:
+        return intro.expires_on
+    if intro.issued_on is not None:
+        return intro.issued_on + timedelta(days=lifetime_days)
+    return None
+
+
 def assess_token_expiry(
     *,
+    access_token: Optional[str] = None,
     warn_days: int = DEFAULT_WARN_DAYS_BEFORE_EXPIRY,
     lifetime_days: int = DEFAULT_TOKEN_LIFETIME_DAYS,
     linkedin_account: str = "",
     today: Optional[date] = None,
+    introspection: Optional[TokenIntrospection] = None,
 ) -> TokenExpiryStatus:
-    """Estimate expiry from issued/expires metadata; warn before deactivation."""
+    """Expiry from LinkedIn introspection, env metadata, or issued_at estimate."""
     ref = today or datetime.now(timezone.utc).date()
-    issued = read_issued_at(linkedin_account)
-    expires = read_expires_at(issued, lifetime_days=lifetime_days)
+
+    intro = introspection
+    if intro is None and access_token:
+        intro = introspect_access_token(access_token)
+
+    if intro is not None:
+        if intro.status in ("expired", "revoked") or not intro.active:
+            ref_expiry = intro.expires_on or ref
+            days_remaining = (ref_expiry - ref).days
+            return TokenExpiryStatus(
+                level=TokenExpiryLevel.EXPIRED,
+                days_remaining=days_remaining,
+                expires_on=intro.expires_on,
+                message=(
+                    f"LinkedIn reports token status={intro.status or 'inactive'} "
+                    f"(introspection). Renew at "
+                    "https://www.linkedin.com/developers/tools/oauth"
+                ),
+            )
+
+    issued_at: Optional[date] = read_issued_at(linkedin_account)
+    if intro is not None and intro.issued_on is not None and issued_at is None:
+        issued_at = intro.issued_on
+
+    expires: Optional[date] = read_expires_at(None, lifetime_days=lifetime_days)
+    if expires is None and intro is not None and intro.expires_on is not None:
+        expires = intro.expires_on
+    if expires is None:
+        expires = read_expires_at(issued_at, lifetime_days=lifetime_days)
+    if expires is None and intro is not None:
+        expires = _expiry_from_introspection(intro, lifetime_days=lifetime_days)
 
     if expires is None:
         return TokenExpiryStatus(
@@ -126,9 +174,9 @@ def assess_token_expiry(
             days_remaining=None,
             expires_on=None,
             message=(
-                "LinkedIn token expiry unknown — set "
-                f"{_ISSUED_AT_ENV} (YYYY-MM-DD) when you rotate the token on "
-                "Scalingo, or run scripts/setup_token.py locally to record the date."
+                "LinkedIn token expiry unknown — set LINKEDIN_CLIENT_ID and "
+                "LINKEDIN_CLIENT_SECRET for automatic introspection, or set "
+                f"{_ISSUED_AT_ENV} (YYYY-MM-DD) when you rotate the token."
             ),
         )
 
@@ -154,12 +202,13 @@ def assess_token_expiry(
                 f"({days_remaining} day(s) remaining). Renew before deactivation."
             ),
         )
+    source = "introspection" if intro and intro.expires_on else "metadata"
     return TokenExpiryStatus(
         level=TokenExpiryLevel.OK,
         days_remaining=days_remaining,
         expires_on=expires,
         message=(
-            f"LinkedIn token OK — estimated expiry {expires.isoformat()} "
+            f"LinkedIn token OK ({source}) — expiry {expires.isoformat()} "
             f"({days_remaining} day(s) remaining)."
         ),
     )

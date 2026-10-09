@@ -16,6 +16,7 @@ from linkedin_api.utils.secret_retrieval import (
     SecretRetrievalIssue,
     retrieve_secret,
 )
+from linkedin_api.utils.token_fingerprint import detect_token_rotation
 from linkedin_api.utils.token_lifecycle import (
     TokenExpiryLevel,
     assess_token_expiry,
@@ -98,7 +99,11 @@ def build_token_health_report(
             messages=tuple(messages),
         )
 
-    expiry = assess_token_expiry(linkedin_account=linkedin_account)
+    detect_token_rotation(retrieval.value)
+    expiry = assess_token_expiry(
+        access_token=retrieval.value,
+        linkedin_account=linkedin_account,
+    )
     messages.append(expiry.message)
 
     api_valid: Optional[bool] = None
@@ -141,7 +146,11 @@ def log_startup_token_health(probe_api: bool = False) -> TokenHealthReport:
             logger.info("linkedin_token_health %s", msg)
 
     if report.retrieval_issue == SecretRetrievalIssue.OK:
-        expiry = assess_token_expiry(linkedin_account=account)
+        token = get_access_token()
+        expiry = assess_token_expiry(
+            access_token=token,
+            linkedin_account=account,
+        )
         log_token_expiry_status(expiry)
 
     return report
@@ -152,7 +161,10 @@ def ensure_token_available_or_raise() -> str:
     token = get_access_token()
     if not token:
         raise ValueError("LINKEDIN_ACCESS_TOKEN not configured")
-    expiry = assess_token_expiry(linkedin_account=os.getenv("LINKEDIN_ACCOUNT", ""))
+    expiry = assess_token_expiry(
+        access_token=token,
+        linkedin_account=os.getenv("LINKEDIN_ACCOUNT", ""),
+    )
     if expiry.level == TokenExpiryLevel.EXPIRED:
         raise TokenExpiredError(expiry.message)
     return token
