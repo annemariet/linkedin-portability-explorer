@@ -22,6 +22,7 @@ from linkedin_api.utils.token_secrets import (
     run_token_apply_hook,
     store_access_token,
     store_refresh_token,
+    validate_update_hook_env,
 )
 
 
@@ -38,6 +39,12 @@ def run_update(
     redirect_or_code: Optional[str] = None,
     skip_check: bool = False,
 ) -> int:
+    try:
+        validate_update_hook_env()
+    except ValueError as exc:
+        print(f"ERROR: {exc}")
+        return 1
+
     try:
         config = load_oauth_client_config()
     except ValueError as exc:

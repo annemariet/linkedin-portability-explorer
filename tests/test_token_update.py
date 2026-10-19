@@ -109,3 +109,55 @@ class TestTokenApplyHook:
         monkeypatch.setenv("LINKEDIN_TOKEN_APPLY_TIMEOUT", "0.01")
         with pytest.raises(RuntimeError, match="timed out"):
             run_token_apply_hook(self._TOKEN)
+
+
+class TestRunUpdateHookValidation:
+    def test_invalid_apply_timeout_before_oauth(self, monkeypatch, capsys):
+        monkeypatch.setenv("LINKEDIN_CLIENT_ID", _FIXTURE_CLIENT_ID)
+        monkeypatch.setenv("LINKEDIN_CLIENT_SECRET", _FIXTURE_CLIENT_SECRET)
+        monkeypatch.setenv("LINKEDIN_TOKEN_APPLY_TIMEOUT", "abc")
+
+        with patch("linkedin_api.utils.token_update.exchange_authorization_code") as ex:
+            code = run_update(
+                redirect_or_code=(
+                    f"https://example.test/cb?code={_FIXTURE_CODE}&state=x"
+                ),
+            )
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "ERROR:" in out
+        assert "LINKEDIN_TOKEN_APPLY_TIMEOUT" in out
+        ex.assert_not_called()
+
+    def test_hook_oserror_exits_cleanly(self, monkeypatch, capsys):
+        monkeypatch.setenv("LINKEDIN_CLIENT_ID", _FIXTURE_CLIENT_ID)
+        monkeypatch.setenv("LINKEDIN_CLIENT_SECRET", _FIXTURE_CLIENT_SECRET)
+        monkeypatch.setenv("LINKEDIN_TOKEN_APPLY_CMD", "echo;")
+
+        exchange = TokenExchangeResult(
+            access_token=_FIXTURE_ACCESS_TOKEN,
+            refresh_token=None,
+            expires_in=60,
+        )
+        with patch(
+            "linkedin_api.utils.token_update.new_oauth_state",
+            return_value=_FIXTURE_STATE,
+        ):
+            with patch(
+                "linkedin_api.utils.token_update.exchange_authorization_code",
+                return_value=exchange,
+            ):
+                with patch("linkedin_api.utils.token_update.store_access_token"):
+                    code = run_update(
+                        redirect_or_code=(
+                            f"https://example.test/cb?code={_FIXTURE_CODE}"
+                            f"&state={_FIXTURE_STATE}"
+                        ),
+                        skip_check=True,
+                    )
+
+        out = capsys.readouterr().out
+        assert code == 1
+        assert "ERROR:" in out
+        assert "could not be executed" in out
+        assert _FIXTURE_ACCESS_TOKEN not in out

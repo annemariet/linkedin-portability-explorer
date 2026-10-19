@@ -173,6 +173,32 @@ def store_access_token(access_token: str) -> None:
     keyring.set_password(access_token_keyring_service(), account, access_token)
 
 
+def resolve_apply_hook_timeout() -> float:
+    """Return apply-hook timeout seconds; raises ValueError when env is invalid."""
+    timeout_raw = (os.getenv(_APPLY_TIMEOUT_ENV) or "").strip()
+    if not timeout_raw:
+        return _DEFAULT_APPLY_TIMEOUT_SEC
+    try:
+        value = float(timeout_raw)
+    except ValueError:
+        raise ValueError(
+            "LINKEDIN_TOKEN_APPLY_TIMEOUT must be a positive number"
+        ) from None
+    if value <= 0:
+        raise ValueError(
+            "LINKEDIN_TOKEN_APPLY_TIMEOUT must be a positive number"
+        ) from None
+    return value
+
+
+def validate_update_hook_env() -> None:
+    """Validate optional apply-hook settings before OAuth (fail fast)."""
+    timeout_set = bool((os.getenv(_APPLY_TIMEOUT_ENV) or "").strip())
+    cmd_set = bool((os.getenv(_APPLY_CMD_ENV) or "").strip())
+    if timeout_set or cmd_set:
+        resolve_apply_hook_timeout()
+
+
 def store_refresh_token(refresh_token: str) -> None:
     if keyring is None:
         raise RuntimeError("keyring is not available")
@@ -188,8 +214,7 @@ def run_token_apply_hook(access_token: str) -> None:
     cmd = (os.getenv(_APPLY_CMD_ENV) or "").strip()
     if not cmd:
         return
-    timeout_raw = (os.getenv(_APPLY_TIMEOUT_ENV) or "").strip()
-    timeout = float(timeout_raw) if timeout_raw else _DEFAULT_APPLY_TIMEOUT_SEC
+    timeout = resolve_apply_hook_timeout()
     argv = shlex.split(cmd)
     if not argv:
         raise RuntimeError("LINKEDIN_TOKEN_APPLY_CMD is empty after parsing") from None
@@ -204,6 +229,8 @@ def run_token_apply_hook(access_token: str) -> None:
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError("LINKEDIN_TOKEN_APPLY_CMD timed out") from None
+    except OSError:
+        raise RuntimeError("LINKEDIN_TOKEN_APPLY_CMD could not be executed") from None
     if proc.returncode != 0:
         raise RuntimeError(
             f"LINKEDIN_TOKEN_APPLY_CMD exited with code {proc.returncode}"
