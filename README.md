@@ -76,6 +76,8 @@ uv run python scripts/setup_token.py
 
 This securely stores your token in macOS Keychain.
 
+Shared keyring service names (LLM/Tavily aliases) are configurable via `LINKEDIN_KEYRING_SERVICE` and optional legacy aliases; see [docs/keyring-migration.md](docs/keyring-migration.md).
+
 **Alternative: Environment Variable**
 
 ```bash
