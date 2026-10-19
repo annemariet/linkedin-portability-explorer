@@ -16,8 +16,8 @@
 
 ## Signed URLs and expiry
 
-CDN links use `e=` (and `t=`) query parameters. They **expire**; after expiry the embed may break in Obsidian or the vault. **`ENRICHMENT_VERSION` stays at 3**, so routine enrich does **not** refresh expired embeds on already-enriched posts. Refresh happens only via a **forced re-enrich**, or the planned **image-checker** pass (amai-lab-r0jf.4). **Local durable copies** are that checker’s job — not this pipeline.
+CDN links use `e=` (and `t=`) query parameters. They **expire**; after expiry the embed may break in Obsidian or other vault-style exports. **`ENRICHMENT_VERSION` stays at 3**, so routine enrich does **not** refresh expired embeds on already-enriched posts. Refresh happens only via a **forced re-enrich**, or a future **image-checker** pass that downloads durable local copies (out of scope for this pipeline).
 
-## Vault export (amai-lab)
+## Downstream export
 
-Export copies only trusted local `images/…` files (`resolve_trusted_local_rel`). It does not download CDN URLs at export time; CDN embeds remain as links in exported markdown.
+Consumers that copy content out of the store should copy only trusted local `images/…` files (`resolve_trusted_local_rel`). They should not download CDN URLs at export time; CDN embeds remain as links in exported markdown.

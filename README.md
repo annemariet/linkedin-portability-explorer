@@ -47,7 +47,7 @@ LinkedIn API → activities.csv → pipeline (collect → enrich → fetch URLs 
                               content_store/ + resources/
 ```
 
-Downstream consumers (e.g. private vault export in amai-lab) should depend on the public `linkedin_api` API — not private `_` helpers.
+Downstream tools and integrations should depend on the public `linkedin_api` API — not private `_` helpers.
 
 ## Setup (auth)
 

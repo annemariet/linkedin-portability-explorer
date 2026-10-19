@@ -1,15 +1,35 @@
 ---
 name: github-use
-description: Pointer to canonical amai-lab Git/GitHub workflow for this repo.
+description: Git and GitHub workflow — branches, commits, PRs, checks, and LinkedIn-data validation when relevant.
 ---
 
-# GitHub (canonical policy)
+# GitHub
 
-**Do not maintain a second dialect here.** For branches, commits, PR titles, and push rules, follow the canonical skill:
+## Branches and commits
 
-**[amai-lab `github-use`](https://github.com/annemariet/amai-lab/blob/main/skills/github-use/SKILL.md)** (dialect A: gitmoji + `(scope)` PR titles, feature branches only, never push or merge `main`).
+- **Feature branches only:** branch off `main` (or the maintainer’s agreed base). Never commit or push directly to `main`.
+- **Never merge** into `main` unless the maintainer explicitly asks.
+- **Never force-push** or **rebase shared branches** others may have checked out.
+- **Commits:** small and focused; [gitmoji](https://gitmoji.dev/) + conventional style (see `CLAUDE.md`).
 
-## Repo-specific addendum
+## Before pushing
 
-- **Pre-push checks for this project:** `uv run black --check .`, `uv run flake8 linkedin_api tests examples *.py`, `uv run mypy linkedin_api`, `uv run pytest` (see `AGENTS.md`).
-- **LinkedIn data PR validation:** when a change touches fetch, enrich, content store, or pipeline behavior, use [validation.md](./validation.md) in the PR description.
+Run this repo’s checks and fix failures (or call them out in the PR):
+
+```bash
+uv run black --check .
+uv run flake8 linkedin_api tests examples *.py
+uv run mypy linkedin_api
+uv run pytest
+```
+
+## Pull requests
+
+- **Title:** `<gitmoji> (<scope>) Short summary` in plain English (e.g. `📝 (skills) Make agent skills self-contained`). **No ticket IDs** in titles.
+- **Body:** what changed, why, and how it was validated. Prefer **linked, labelled references** (e.g. “Fixes #42”, “Compared to commit abc1234 on main”) instead of bare issue numbers or SHAs with no context.
+- **Review comments:** address feedback on the PR; use `gh` when helpful (e.g. `gh pr view`, `gh api repos/annemariet/linkedin-portability-explorer/pulls/<number>/comments`).
+- **LinkedIn pipeline changes:** when fetch, enrich, content store, or pipeline behavior changes, add a Validation section per [validation.md](./validation.md).
+
+## GitHub CLI
+
+- `gh pr list`, `gh pr view`, `gh pr comment` — inspect PRs and respond to review when the task requires it.
