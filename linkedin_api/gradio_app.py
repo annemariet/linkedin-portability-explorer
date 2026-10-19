@@ -9,7 +9,7 @@ import dotenv
 dotenv.load_dotenv()
 
 from linkedin_api.gradio_pipeline_ui import create_pipeline_interface
-from linkedin_api.utils.token_health import log_startup_token_health
+from linkedin_api.utils.token_check import log_startup_token_health
 
 logging.basicConfig(
     level=logging.INFO,

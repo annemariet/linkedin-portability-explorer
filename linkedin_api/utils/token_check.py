@@ -1,33 +1,42 @@
-"""Startup and CLI checks for LinkedIn token availability and expiry."""
+"""Token health report, API probe, Gradio startup logging, and CLI."""
 
 from __future__ import annotations
 
+import argparse
 import logging
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
 import requests
 
-from linkedin_api.utils.auth import get_access_token
-from linkedin_api.utils.changelog import BASE_URL, TokenExpiredError
-from linkedin_api.utils.secret_retrieval import (
-    SecretRetrievalIssue,
-    retrieve_secret,
-)
-from linkedin_api.utils.token_fingerprint import detect_token_rotation
-from linkedin_api.utils.token_lifecycle import (
+from linkedin_api.utils.auth import build_linkedin_session
+from linkedin_api.utils.changelog import BASE_URL
+from linkedin_api.utils.token_expiry import (
     TokenExpiryLevel,
     assess_token_expiry,
 )
+from linkedin_api.utils.token_secrets import (
+    SecretRetrievalIssue,
+    detect_token_rotation,
+    retrieve_secret,
+)
 
 logger = logging.getLogger(__name__)
+
+# CLI exit codes (documented in docs/token-health.md)
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_WARN = 2
+EXIT_EXPIRY_UNKNOWN = 3
 
 
 class TokenHealthLevel(str, Enum):
     OK = "ok"
     WARN = "warn"
     ERROR = "error"
+    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
@@ -43,20 +52,15 @@ def _probe_token_api(
     access_token: str, timeout: float = 15.0
 ) -> tuple[bool, Optional[str]]:
     """Lightweight changelog request; True if token accepted."""
-    url = f"{BASE_URL}/memberChangeLogs"
+    session = build_linkedin_session(access_token)
     params: dict[str, str | int] = {
         "q": "criteria",
         "startTime": 0,
         "count": 1,
     }
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "X-Restli-Protocol-Version": "2.0.0",
-        "LinkedIn-Version": "202312",
-    }
+    url = f"{BASE_URL}/memberChangeLogs"
     try:
-        response = requests.get(url, params=params, headers=headers, timeout=timeout)
+        response = session.get(url, params=params, timeout=timeout)
     except requests.RequestException as exc:
         return False, f"API probe failed: {exc}"
 
@@ -105,13 +109,16 @@ def build_token_health_report(
     api_valid: Optional[bool] = None
     level = TokenHealthLevel.OK
 
-    if expiry.level != TokenExpiryLevel.UNKNOWN and expiry.message:
+    if expiry.message:
         messages.append(expiry.message)
 
     if expiry.level == TokenExpiryLevel.EXPIRED:
         level = TokenHealthLevel.ERROR
     elif expiry.level == TokenExpiryLevel.WARN:
         level = TokenHealthLevel.WARN
+    elif expiry.level == TokenExpiryLevel.UNKNOWN:
+        level = TokenHealthLevel.UNKNOWN
+        logger.warning("linkedin_token_health %s", expiry.message)
 
     if probe_api:
         ok, err = _probe_token_api(retrieval.value)
@@ -136,7 +143,7 @@ def log_startup_token_health(probe_api: bool = False) -> TokenHealthReport:
     for msg in report.messages:
         if report.level == TokenHealthLevel.ERROR:
             logger.error("linkedin_token_health %s", msg)
-        elif report.level == TokenHealthLevel.WARN:
+        elif report.level in (TokenHealthLevel.WARN, TokenHealthLevel.UNKNOWN):
             logger.warning("linkedin_token_health %s", msg)
         else:
             logger.info("linkedin_token_health %s", msg)
@@ -144,12 +151,45 @@ def log_startup_token_health(probe_api: bool = False) -> TokenHealthReport:
     return report
 
 
-def ensure_token_available_or_raise() -> str:
-    """Return access token or raise TokenExpiredError / ValueError with context."""
-    token = get_access_token()
-    if not token:
-        raise ValueError("LINKEDIN_ACCESS_TOKEN not configured")
-    expiry = assess_token_expiry(access_token=token)
-    if expiry.level == TokenExpiryLevel.EXPIRED:
-        raise TokenExpiredError(expiry.message)
-    return token
+def exit_code_for_report(report: TokenHealthReport, *, warn_exit_code: bool) -> int:
+    if report.level == TokenHealthLevel.ERROR:
+        return EXIT_ERROR
+    if report.level == TokenHealthLevel.UNKNOWN:
+        return EXIT_EXPIRY_UNKNOWN
+    if warn_exit_code and report.level == TokenHealthLevel.WARN:
+        return EXIT_WARN
+    return EXIT_OK
+
+
+def _print_report(report: TokenHealthReport) -> None:
+    prefix = {
+        TokenHealthLevel.ERROR: "ERROR:",
+        TokenHealthLevel.WARN: "WARN:",
+        TokenHealthLevel.UNKNOWN: "UNKNOWN:",
+        TokenHealthLevel.OK: "OK:",
+    }[report.level]
+    for msg in report.messages:
+        print(f"{prefix} {msg}")
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description="Check LinkedIn access token health")
+    parser.add_argument(
+        "--probe-api",
+        action="store_true",
+        help="Call LinkedIn changelog API to verify the token is accepted",
+    )
+    parser.add_argument(
+        "--warn-exit-code",
+        action="store_true",
+        help="Exit 2 when expiry is in the warning window (for scheduler alerts)",
+    )
+    args = parser.parse_args(argv)
+
+    report = build_token_health_report(probe_api=args.probe_api)
+    _print_report(report)
+    sys.exit(exit_code_for_report(report, warn_exit_code=args.warn_exit_code))
+
+
+if __name__ == "__main__":
+    main()

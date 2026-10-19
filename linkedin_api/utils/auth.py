@@ -2,7 +2,7 @@ from typing import Optional
 
 import requests
 
-from linkedin_api.utils.secret_retrieval import retrieve_secret
+from linkedin_api.utils.token_secrets import retrieve_secret
 
 
 def get_secret(
@@ -13,7 +13,7 @@ def get_secret(
     Retrieve a secret: non-empty environment variable wins, then keyring.
 
     Empty or failed lookups are logged at ERROR under ``secret_retrieval``
-    (see ``secret_retrieval.retrieve_secret``).
+    (see ``token_secrets.retrieve_secret``).
     """
     return retrieve_secret(token_var, account_var).value
 

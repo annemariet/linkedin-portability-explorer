@@ -348,7 +348,7 @@ RETURN post, resource, person, comment, ref, creates, comments
 
 ## Token health (deployments)
 
-Schedule **`uv run linkedin-check-token --warn-exit-code`** from any scheduler; exit **`2`** means the token is inside the expiry warning window, exit **`1`** is a hard failure. See [docs/token-health.md](docs/token-health.md) for introspection env vars, log event names, and how to update secrets after OAuth renewal.
+Schedule **`uv run linkedin-check-token --warn-exit-code`** from any scheduler: exit **`1`** hard failure, **`2`** expiry warning window, **`3`** expiry unknown (set introspection client credentials). See [docs/token-health.md](docs/token-health.md).
 
 ## Troubleshooting
 

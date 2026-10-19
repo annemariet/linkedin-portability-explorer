@@ -1,24 +1,29 @@
-"""Env-first secret retrieval with structured failure logging."""
+"""Env-first secret retrieval and access-token fingerprint (no secret values logged)."""
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Optional
 
 import dotenv
 
 try:
     import keyring
+    from keyring.errors import NoKeyringError as KeyringMissingBackend
 except ImportError:
     keyring = None  # type: ignore[assignment]
+    KeyringMissingBackend = None  # type: ignore[misc,assignment]
 
 logger = logging.getLogger(__name__)
 
 _TOKEN_VAR_DEFAULT = "LINKEDIN_ACCESS_TOKEN"
 _ACCOUNT_VAR_DEFAULT = "LINKEDIN_ACCOUNT"
+_FINGERPRINT_FILE = ".linkedin_access_token_fingerprint"
 
 
 class SecretRetrievalIssue(str, Enum):
@@ -64,12 +69,7 @@ def retrieve_secret(
     *,
     log_failures: bool = True,
 ) -> SecretRetrievalResult:
-    """
-    Resolve a secret: non-empty env value wins, then keyring.
-
-    Logs retrieval failures at ERROR under the ``secret_retrieval`` event name
-    (never logs secret values).
-    """
+    """Resolve a secret: non-empty env value wins, then keyring."""
     dotenv.load_dotenv()
 
     env_raw = os.environ.get(token_var)
@@ -104,21 +104,26 @@ def retrieve_secret(
                     env_var=token_var,
                 )
         except Exception as exc:
-            logger.warning(
-                "keyring lookup failed for %s (account=%r): %s",
-                token_var,
-                account or None,
-                exc,
-            )
-            result = SecretRetrievalResult(
-                value=None,
-                source=None,
-                issue=SecretRetrievalIssue.KEYRING_ERROR,
-                env_var=token_var,
-            )
-            if log_failures:
-                _log_retrieval_failure(result)
-            return result
+            if KeyringMissingBackend is not None and isinstance(
+                exc, KeyringMissingBackend
+            ):
+                pass
+            else:
+                logger.warning(
+                    "keyring lookup failed for %s (account=%r): %s",
+                    token_var,
+                    account or None,
+                    exc,
+                )
+                result = SecretRetrievalResult(
+                    value=None,
+                    source=None,
+                    issue=SecretRetrievalIssue.KEYRING_ERROR,
+                    env_var=token_var,
+                )
+                if log_failures:
+                    _log_retrieval_failure(result)
+                return result
 
     result = SecretRetrievalResult(
         value=None,
@@ -129,3 +134,28 @@ def retrieve_secret(
     if log_failures:
         _log_retrieval_failure(result)
     return result
+
+
+def _fingerprint_path() -> Path:
+    from linkedin_api.activity_csv import get_data_dir
+
+    return get_data_dir() / _FINGERPRINT_FILE
+
+
+def token_fingerprint(access_token: str) -> str:
+    return hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+
+
+def detect_token_rotation(access_token: str) -> bool:
+    """Return True when the token value changed since the last recorded fingerprint."""
+    path = _fingerprint_path()
+    current = token_fingerprint(access_token)
+    previous = path.read_text().strip() if path.exists() else ""
+    if previous == current:
+        return False
+    path.write_text(current + "\n", encoding="utf-8")
+    if previous:
+        logger.info(
+            "linkedin_access_token_rotated fingerprint changed (new token in env/keyring)"
+        )
+    return bool(previous)
