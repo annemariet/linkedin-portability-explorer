@@ -348,7 +348,7 @@ RETURN post, resource, person, comment, ref, creates, comments
 
 ## Token health (deployments)
 
-Schedule **`uv run linkedin-check-token --warn-exit-code`** from any scheduler: exit **`1`** hard failure, **`2`** expiry warning window, **`3`** expiry unknown (set introspection client credentials). See [docs/token-health.md](docs/token-health.md).
+Schedule **`uv run linkedin-check-token --warn-exit-code`** from any scheduler; renew with **`uv run linkedin-update-token`** (OAuth). See [docs/token-health.md](docs/token-health.md) for exit codes and env vars.
 
 ## Troubleshooting
 

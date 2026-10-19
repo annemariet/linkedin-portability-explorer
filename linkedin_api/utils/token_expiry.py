@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Optional
 
 import requests
+
+from linkedin_api.utils.token_secrets import read_app_credential
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +48,8 @@ class TokenExpiryStatus:
 
 
 def _client_credentials() -> tuple[Optional[str], Optional[str]]:
-    client_id = (os.getenv("LINKEDIN_CLIENT_ID") or "").strip() or None
-    client_secret = (os.getenv("LINKEDIN_CLIENT_SECRET") or "").strip() or None
+    client_id = read_app_credential("LINKEDIN_CLIENT_ID")
+    client_secret = read_app_credential("LINKEDIN_CLIENT_SECRET")
     return client_id, client_secret
 
 

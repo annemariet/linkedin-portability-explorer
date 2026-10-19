@@ -22,8 +22,17 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _TOKEN_VAR_DEFAULT = "LINKEDIN_ACCESS_TOKEN"
+_REFRESH_TOKEN_VAR = "LINKEDIN_REFRESH_TOKEN"
 _ACCOUNT_VAR_DEFAULT = "LINKEDIN_ACCOUNT"
+_KEYRING_SERVICE_ENV = "LINKEDIN_KEYRING_SERVICE"
+_APPLY_CMD_ENV = "LINKEDIN_TOKEN_APPLY_CMD"
 _FINGERPRINT_FILE = ".linkedin_access_token_fingerprint"
+
+
+def access_token_keyring_service() -> str:
+    """Keyring service name for the member access token (not app credentials)."""
+    override = (os.getenv(_KEYRING_SERVICE_ENV) or "").strip()
+    return override or _TOKEN_VAR_DEFAULT
 
 
 class SecretRetrievalIssue(str, Enum):
@@ -93,9 +102,12 @@ def retrieve_secret(
         return result
 
     account = os.getenv(account_var, "")
+    keyring_service = (
+        access_token_keyring_service() if token_var == _TOKEN_VAR_DEFAULT else token_var
+    )
     if keyring is not None:
         try:
-            secret = keyring.get_password(token_var, account)
+            secret = keyring.get_password(keyring_service, account)
             if secret and secret.strip():
                 return SecretRetrievalResult(
                     value=secret.strip(),
@@ -136,6 +148,11 @@ def retrieve_secret(
     return result
 
 
+def read_app_credential(var_name: str) -> Optional[str]:
+    """Read app credential from env or keyring; never writes."""
+    return retrieve_secret(var_name, log_failures=False).value
+
+
 def _fingerprint_path() -> Path:
     from linkedin_api.activity_csv import get_data_dir
 
@@ -144,6 +161,42 @@ def _fingerprint_path() -> Path:
 
 def token_fingerprint(access_token: str) -> str:
     return hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+
+
+def store_access_token(access_token: str) -> None:
+    """Persist access token to keyring (never logs the value)."""
+    if keyring is None:
+        raise RuntimeError("keyring is not available")
+    account = os.getenv(_ACCOUNT_VAR_DEFAULT, "")
+    keyring.set_password(access_token_keyring_service(), account, access_token)
+
+
+def store_refresh_token(refresh_token: str) -> None:
+    if keyring is None:
+        raise RuntimeError("keyring is not available")
+    account = os.getenv(_ACCOUNT_VAR_DEFAULT, "")
+    keyring.set_password(_REFRESH_TOKEN_VAR, account, refresh_token)
+
+
+def run_token_apply_hook(access_token: str) -> None:
+    """Optional deployment hook: env command receives token bytes on stdin."""
+    import subprocess
+
+    cmd = (os.getenv(_APPLY_CMD_ENV) or "").strip()
+    if not cmd:
+        return
+    proc = subprocess.run(
+        cmd,
+        shell=True,
+        input=access_token,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"LINKEDIN_TOKEN_APPLY_CMD exited with code {proc.returncode}"
+        )
 
 
 def detect_token_rotation(access_token: str) -> bool:

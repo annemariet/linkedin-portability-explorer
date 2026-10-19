@@ -161,7 +161,7 @@ def exit_code_for_report(report: TokenHealthReport, *, warn_exit_code: bool) -> 
     return EXIT_OK
 
 
-def _print_report(report: TokenHealthReport) -> None:
+def print_token_health_report(report: TokenHealthReport) -> None:
     prefix = {
         TokenHealthLevel.ERROR: "ERROR:",
         TokenHealthLevel.WARN: "WARN:",
@@ -187,7 +187,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     args = parser.parse_args(argv)
 
     report = build_token_health_report(probe_api=args.probe_api)
-    _print_report(report)
+    print_token_health_report(report)
     sys.exit(exit_code_for_report(report, warn_exit_code=args.warn_exit_code))
 
 
