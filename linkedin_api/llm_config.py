@@ -9,6 +9,8 @@ import warnings
 from dataclasses import dataclass
 from typing import Any, Literal, cast
 
+from linkedin_api.utils.keyring_services import keyring_service_candidates
+
 MAMMOUTH_BASE_URL = "https://api.mammouth.ai/v1"
 OLLAMA_DEFAULT_URL = "http://localhost:11434"
 OPENAI_COMPAT_DEFAULT_MODEL = "gpt-5.4-nano"
@@ -18,14 +20,18 @@ _MAMMOUTH_DEPRECATED_CHAT_MODELS: dict[str, str] = {
     "gpt-5-nano": OPENAI_COMPAT_DEFAULT_MODEL,
 }
 
-_KEYRING_SERVICES = ("lucys-foundry", "agent-fleet-rts")
 _MAMMOUTH_KEYRING_ACCOUNTS = ("mammouth", "mammouth_api_key", "openai")
-_ANTHROPIC_KEYRING_LOOKUPS = (
-    ("agent-fleet-rts", "Anthropic"),
-    ("agent-fleet-rts", "anthropic"),
-    ("agent-fleet-rts", "anthropic_api_key"),
-    ("Anthropic", "Anthropic"),
-)
+
+
+def _anthropic_keyring_lookups() -> tuple[tuple[str, str], ...]:
+    accounts = ("Anthropic", "anthropic", "anthropic_api_key")
+    lookups: list[tuple[str, str]] = []
+    for service in keyring_service_candidates():
+        for account in accounts:
+            lookups.append((service, account))
+    lookups.append(("Anthropic", "Anthropic"))
+    return tuple(lookups)
+
 
 OLLAMA_DEFAULT_LLM_MODEL = "llama3.2:3b"
 
@@ -179,7 +185,7 @@ def _resolve_api_key(quiet: bool = False) -> tuple[str | None, str | None]:
     try:
         import keyring
 
-        for service in _KEYRING_SERVICES:
+        for service in keyring_service_candidates():
             for account in _MAMMOUTH_KEYRING_ACCOUNTS:
                 key = keyring.get_password(service, account)
                 if key:
@@ -212,7 +218,7 @@ def _resolve_anthropic_api_key(quiet: bool = False) -> tuple[str | None, str | N
     try:
         import keyring
 
-        for service, account in _ANTHROPIC_KEYRING_LOOKUPS:
+        for service, account in _anthropic_keyring_lookups():
             key = keyring.get_password(service, account)
             if key:
                 if not quiet:

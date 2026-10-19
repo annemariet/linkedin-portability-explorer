@@ -79,6 +79,7 @@ from linkedin_api.content_store import (
 )
 from linkedin_api.html_text import extract_html_body_text, x_article_blocks_to_text
 from linkedin_api.utils.auth import get_secret
+from linkedin_api.utils.keyring_services import keyring_service_candidates
 from linkedin_api.utils.urls import (
     arxiv_paper_id,
     canonical_resource_url,
@@ -377,21 +378,8 @@ def _fetch_arxiv(url: str) -> tuple[str, str, list[str]]:
     return _fetch_html_body(f"https://arxiv.org/abs/{paper_id}")
 
 
-#: Shared cross-project keychain used by amai-lab's lucys-foundry
-#: ``manage_keys.py set tavily`` (service "lucys-foundry", legacy
-#: "agent-fleet-rts", account "tavily"). Unifying this with this repo's own
-#: TAVILY_API_KEY/LINKEDIN_ACCOUNT convention is tracked as amai-lab ADR 0001
-#: §4 / LUC-96 — not resolved yet, hence checking both here.
-_SHARED_TAVILY_KEYRING_LOOKUPS: tuple[tuple[str, str], ...] = (
-    ("lucys-foundry", "tavily"),
-    ("agent-fleet-rts", "tavily"),
-)
-
-
 def _tavily_api_key() -> str:
-    """Resolve TAVILY_API_KEY: this repo's own keyring convention (see
-    ``get_secret``, which also falls back to the env var), then the shared
-    lucys-foundry keychain (see ``_SHARED_TAVILY_KEYRING_LOOKUPS``)."""
+    """Resolve TAVILY_API_KEY: env / own keyring convention, then shared service."""
     key = get_secret("TAVILY_API_KEY")
     if key:
         return key
@@ -399,8 +387,8 @@ def _tavily_api_key() -> str:
     try:
         import keyring
 
-        for service, account in _SHARED_TAVILY_KEYRING_LOOKUPS:
-            key = keyring.get_password(service, account)
+        for service in keyring_service_candidates():
+            key = keyring.get_password(service, "tavily")
             if key:
                 return key
     except Exception:
