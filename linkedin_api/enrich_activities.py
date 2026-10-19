@@ -28,11 +28,17 @@ from linkedin_api.enriched_record import EnrichedRecord
 from linkedin_api.content_store import (
     _ms_to_iso,
     has_content,
+    load_content,
     load_metadata,
     merge_enrichment_activity,
     resolve_urls_for_metadata,
     save_content,
     save_metadata,
+)
+from linkedin_api.post_images import (
+    apply_post_image_sidecar,
+    image_urls_from_metadata,
+    merge_image_meta_lists,
 )
 from linkedin_api.http_client import fetch_linkedin_post_html
 from linkedin_api.post_extraction import (
@@ -165,12 +171,25 @@ def _save_from_api_fallback(
         meta_urls = resolve_urls_for_metadata(u)
         body = append_missing_resource_urls(api_body, meta_urls)
         rec.urls = meta_urls
+        existing_body = load_content(post_id, post_urn=post_urn) or ""
+        existing_meta = load_metadata(post_id, post_urn=post_urn) or {}
+        prev_images = existing_meta.get("images")
+        prev_list = prev_images if isinstance(prev_images, list) else None
+        image_candidates = image_urls_from_metadata(prev_list)
+        body, images_meta = apply_post_image_sidecar(
+            body,
+            image_candidates,
+            existing_body=existing_body,
+            existing_images=prev_list,
+        )
+        images_meta = merge_image_meta_lists(prev_list, images_meta)
         save_content(post_id, body, post_urn=post_urn)
         save_metadata(
             post_id,
             urls=meta_urls,
             mentions=m,
             tags=t,
+            images=images_meta,
             post_url=url,
             post_author="",
             post_author_url="",
@@ -192,11 +211,16 @@ def _save_from_api_fallback(
         u, m, t = merge_classification_with_api([], [], [], api_urls)
         meta_urls = resolve_urls_for_metadata(u)
         rec.urls = meta_urls
+        existing_body = load_content(post_id, post_urn=post_urn) or ""
+        existing_meta = load_metadata(post_id, post_urn=post_urn) or {}
+        prev_images = existing_meta.get("images")
+        prev_list = prev_images if isinstance(prev_images, list) else None
         save_metadata(
             post_id,
             urls=meta_urls,
             mentions=m,
             tags=t,
+            images=prev_list,
             post_url=url,
             post_author="",
             post_author_url="",
