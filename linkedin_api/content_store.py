@@ -19,15 +19,18 @@ Phase 3 metadata (summary, topics, etc.) stored as ``{post_id}.meta.json`` sidec
 
 from __future__ import annotations
 
-import hashlib
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, cast
 
 from linkedin_api.activity_csv import get_data_dir
 from linkedin_api.content_keys import content_stem, storage_key
+from linkedin_api.post_images import merge_image_meta_lists
 from linkedin_api.utils.urls import resolve_redirect, strip_utm_params
+
+logger = logging.getLogger(__name__)
 
 
 def _content_dir() -> Path:
@@ -69,62 +72,6 @@ def save_content(
     path.write_text(text, encoding="utf-8")
     _register_post(stem, pu)
     return path
-
-
-def _images_dir() -> Path:
-    d = _content_dir() / "images"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-def download_image_to_store(url: str) -> str | None:
-    """
-    Download *url* to ``content/images/``; return a path relative to the
-    content directory (e.g. ``"images/abc123.jpg"``) or ``None`` on failure.
-
-    Uses a URL-hash filename so repeated calls for the same URL are no-ops.
-    LinkedIn CDN images have a very long expiry but downloading preserves them
-    offline and guards against future URL changes.
-    """
-    import urllib.parse
-
-    try:
-        import requests as _req
-    except ImportError:
-        return None
-
-    url = (url or "").strip()
-    if not url:
-        return None
-
-    images_dir = _images_dir()
-    url_hash = hashlib.sha256(url.encode()).hexdigest()[:24]
-    parsed = urllib.parse.urlparse(url)
-    suffix = Path(parsed.path).suffix.lower()
-    if suffix not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
-        suffix = ".jpg"
-    filename = f"{url_hash}{suffix}"
-    local_path = images_dir / filename
-    if local_path.exists():
-        return f"images/{filename}"
-    try:
-        resp = _req.get(
-            url,
-            timeout=15,
-            allow_redirects=True,
-            headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-            },
-        )
-        if resp.status_code == 200 and resp.content:
-            local_path.write_bytes(resp.content)
-            return f"images/{filename}"
-    except Exception:
-        pass
-    return None
 
 
 def _comments_path(post_id: str = "", *, post_urn: str = "") -> Path:
@@ -416,16 +363,10 @@ def save_metadata(
     )
     prev_images = existing.get("images")
     inc_images = meta.get("images")
-    if isinstance(prev_images, list) and isinstance(inc_images, list):
-        meta["images"] = list(
-            dict.fromkeys(str(x) for x in prev_images + inc_images if x)
-        )
-    elif isinstance(inc_images, list):
-        meta["images"] = [str(x) for x in inc_images if x]
-    elif isinstance(prev_images, list):
-        meta["images"] = [str(x) for x in prev_images if x]
-    else:
-        meta["images"] = []
+    meta["images"] = merge_image_meta_lists(
+        prev_images if isinstance(prev_images, list) else None,
+        inc_images if isinstance(inc_images, list) else None,
+    )
     meta["post_url"] = post_url or meta.get("post_url") or ""
 
     prev_ids = existing.get("activities_ids") or []
