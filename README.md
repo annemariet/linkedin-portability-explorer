@@ -76,6 +76,8 @@ uv run python scripts/setup_token.py
 
 This securely stores your token in macOS Keychain.
 
+LLM/Tavily keys may also use the shared keyring service `linkedin-portability-explorer` (override with `LINKEDIN_KEYRING_SERVICE` if you stored secrets under a different service name).
+
 **Alternative: Environment Variable**
 
 ```bash
