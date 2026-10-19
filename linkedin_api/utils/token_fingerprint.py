@@ -28,7 +28,7 @@ def detect_token_rotation(access_token: str) -> bool:
 
     Persists only a SHA-256 hash under LINKEDIN_DATA_DIR (safe to commit path;
     file is gitignored via *.csv pattern — fingerprint is not csv but lives in
-    data dir). Used to log rotation on Scalingo after env-set + redeploy.
+    data dir). Used to log rotation after the token value changes in env/keyring.
     """
     path = _fingerprint_path()
     current = token_fingerprint(access_token)

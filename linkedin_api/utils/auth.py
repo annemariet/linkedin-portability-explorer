@@ -12,8 +12,8 @@ def get_secret(
     """
     Retrieve a secret: non-empty environment variable wins, then keyring.
 
-    On Scalingo, empty or unusable env values are logged at ERROR when the
-    variable name is present in the environment (see secret_retrieval).
+    Empty or failed lookups are logged at ERROR under ``secret_retrieval``
+    (see ``secret_retrieval.retrieve_secret``).
     """
     return retrieve_secret(token_var, account_var).value
 

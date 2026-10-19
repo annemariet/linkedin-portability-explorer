@@ -19,7 +19,6 @@ from linkedin_api.utils.token_fingerprint import detect_token_rotation
 from linkedin_api.utils.token_lifecycle import (
     TokenExpiryLevel,
     assess_token_expiry,
-    log_token_expiry_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,13 +73,16 @@ def build_token_health_report(
     *,
     probe_api: bool = False,
 ) -> TokenHealthReport:
-    retrieval = retrieve_secret(log_scalingo_alerts=True)
+    retrieval = retrieve_secret(log_failures=True)
     messages: list[str] = []
 
     if retrieval.issue != SecretRetrievalIssue.OK or not retrieval.value:
         if retrieval.issue == SecretRetrievalIssue.ENV_SET_BUT_EMPTY:
+            messages.append(f"{retrieval.env_var} is set but empty.")
+        elif retrieval.issue == SecretRetrievalIssue.KEYRING_ERROR:
             messages.append(
-                f"{retrieval.env_var} is set but empty — fix Scalingo configuration."
+                f"Keyring lookup failed for {retrieval.env_var} "
+                "(see logs: secret_retrieval)."
             )
         elif retrieval.issue == SecretRetrievalIssue.MISSING:
             messages.append(f"{retrieval.env_var} not found (env or keyring).")
@@ -138,10 +140,6 @@ def log_startup_token_health(probe_api: bool = False) -> TokenHealthReport:
             logger.warning("linkedin_token_health %s", msg)
         else:
             logger.info("linkedin_token_health %s", msg)
-
-    if report.retrieval_issue == SecretRetrievalIssue.OK:
-        token = get_access_token()
-        log_token_expiry_status(assess_token_expiry(access_token=token))
 
     return report
 

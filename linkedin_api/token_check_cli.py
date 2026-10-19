@@ -28,7 +28,7 @@ def main() -> None:
     parser.add_argument(
         "--warn-exit-code",
         action="store_true",
-        help="Exit 2 when expiry is in the warning window (for Scalingo cron alerts)",
+        help="Exit 2 when expiry is in the warning window (for scheduler alerts)",
     )
     args = parser.parse_args()
 
