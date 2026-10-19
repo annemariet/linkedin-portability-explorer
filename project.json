@@ -17,7 +17,7 @@
   },
   "environment": {
     "PYTHONPATH": ".",
-    "PROJECT_ROOT": "."
+    "PROJECT_ROOT": "/workspaces/amai-lab/projects/linkedin"
   },
   "dependencies": {
     "python": ">=3.7",
