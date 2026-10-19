@@ -26,6 +26,8 @@ _REFRESH_TOKEN_VAR = "LINKEDIN_REFRESH_TOKEN"
 _ACCOUNT_VAR_DEFAULT = "LINKEDIN_ACCOUNT"
 _KEYRING_SERVICE_ENV = "LINKEDIN_KEYRING_SERVICE"
 _APPLY_CMD_ENV = "LINKEDIN_TOKEN_APPLY_CMD"
+_APPLY_TIMEOUT_ENV = "LINKEDIN_TOKEN_APPLY_TIMEOUT"
+_DEFAULT_APPLY_TIMEOUT_SEC = 60.0
 _FINGERPRINT_FILE = ".linkedin_access_token_fingerprint"
 
 
@@ -179,24 +181,33 @@ def store_refresh_token(refresh_token: str) -> None:
 
 
 def run_token_apply_hook(access_token: str) -> None:
-    """Optional deployment hook: env command receives token bytes on stdin."""
+    """Optional deployment hook: argv command receives the token on stdin only."""
+    import shlex
     import subprocess
 
     cmd = (os.getenv(_APPLY_CMD_ENV) or "").strip()
     if not cmd:
         return
-    proc = subprocess.run(
-        cmd,
-        shell=True,
-        input=access_token,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    timeout_raw = (os.getenv(_APPLY_TIMEOUT_ENV) or "").strip()
+    timeout = float(timeout_raw) if timeout_raw else _DEFAULT_APPLY_TIMEOUT_SEC
+    argv = shlex.split(cmd)
+    if not argv:
+        raise RuntimeError("LINKEDIN_TOKEN_APPLY_CMD is empty after parsing") from None
+    try:
+        proc = subprocess.run(
+            argv,
+            input=access_token,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("LINKEDIN_TOKEN_APPLY_CMD timed out") from None
     if proc.returncode != 0:
         raise RuntimeError(
             f"LINKEDIN_TOKEN_APPLY_CMD exited with code {proc.returncode}"
-        )
+        ) from None
 
 
 def detect_token_rotation(access_token: str) -> bool:

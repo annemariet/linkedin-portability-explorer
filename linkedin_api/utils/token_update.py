@@ -15,7 +15,8 @@ from linkedin_api.utils.token_oauth import (
     build_authorization_url,
     exchange_authorization_code,
     load_oauth_client_config,
-    parse_authorization_code,
+    new_oauth_state,
+    parse_oauth_callback,
 )
 from linkedin_api.utils.token_secrets import (
     run_token_apply_hook,
@@ -24,13 +25,12 @@ from linkedin_api.utils.token_secrets import (
 )
 
 
-def _read_code_interactively() -> str:
+def _read_redirect_interactively() -> str:
     print(
-        "Paste the full redirect URL or the authorization code "
-        "(input is not echoed in logs):"
+        "Paste the full redirect URL from the browser "
+        "(must include code and state query parameters):"
     )
-    line = sys.stdin.readline()
-    return parse_authorization_code(line)
+    return sys.stdin.readline()
 
 
 def run_update(
@@ -44,13 +44,14 @@ def run_update(
         print(f"ERROR: {exc}")
         return 1
 
-    auth_url = build_authorization_url(config)
-    print("Open this URL in a browser, authorize, then paste the redirect URL or code:")
+    oauth_state = new_oauth_state()
+    auth_url = build_authorization_url(config, state=oauth_state)
+    print("Open this URL in a browser, authorize, then paste the redirect URL:")
     print(auth_url)
 
     try:
-        raw = redirect_or_code if redirect_or_code else _read_code_interactively()
-        code = parse_authorization_code(raw)
+        raw = redirect_or_code if redirect_or_code else _read_redirect_interactively()
+        code = parse_oauth_callback(raw, expected_state=oauth_state)
         tokens = exchange_authorization_code(config, code)
     except (ValueError, RuntimeError) as exc:
         print(f"ERROR: {exc}")
@@ -85,7 +86,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
     parser.add_argument(
         "--redirect-or-code",
-        help="Redirect URL or authorization code (skip interactive paste)",
+        help="Full OAuth redirect URL (must include code and state)",
     )
     parser.add_argument(
         "--skip-check",

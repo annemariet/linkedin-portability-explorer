@@ -35,10 +35,10 @@ Flow:
 
 1. Reads **app credentials only** (never writes them): `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` from the environment or keyring (`LINKEDIN_ACCOUNT` as the keyring account, same as other secrets).
 2. Prints a browser-ready LinkedIn authorization URL (scope default `r_dma_portability_self_serve`; override with `LINKEDIN_OAUTH_SCOPE`). The app client id appears **only** in that URL on your terminal.
-3. You authorize in the browser; paste the redirect URL or raw authorization code.
+3. You authorize in the browser; paste the **full redirect URL** (must include `code` and `state`; bare codes are rejected).
 4. Exchanges the code for an access token (and refresh token when LinkedIn returns one). **Tokens and the client secret are never logged.**
 5. Stores the access token in the keyring under **`LINKEDIN_KEYRING_SERVICE`** when set, otherwise service name `LINKEDIN_ACCESS_TOKEN` (account `LINKEDIN_ACCOUNT`). Refresh tokens use service `LINKEDIN_REFRESH_TOKEN`.
-6. Optionally runs **`LINKEDIN_TOKEN_APPLY_CMD`**: a shell command that receives the new access token on **stdin** (for remote secret stores). The token is never passed on the command line.
+6. Optionally runs **`LINKEDIN_TOKEN_APPLY_CMD`**: argv parsed with `shlex` (no shell); the new access token is sent on **stdin** only. Timeout: **`LINKEDIN_TOKEN_APPLY_TIMEOUT`** seconds (default 60).
 7. Runs the same health check as `linkedin-check-token` so you see the new expiry when introspection is configured.
 
 Configure the redirect URI to match your LinkedIn app settings:
