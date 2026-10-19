@@ -839,17 +839,11 @@ class TestCloudflareDetection:
 
 
 # ---------------------------------------------------------------------------
-# TAVILY_API_KEY resolution — own convention vs shared lucys-foundry keychain
+# TAVILY_API_KEY resolution — own convention vs LINKEDIN_KEYRING_SERVICE
 # ---------------------------------------------------------------------------
 
 
 class TestTavilyApiKeyResolution:
-    """This repo's own keyring convention (service=TAVILY_API_KEY, account=
-    LINKEDIN_ACCOUNT) predates and doesn't match lucys-foundry's shared
-    keychain (service="lucys-foundry", account="tavily", written by
-    ``manage_keys.py set tavily``). Unifying them is tracked as amai-lab ADR
-    0001 §4 / LUC-96 — until then, ``_tavily_api_key`` checks both."""
-
     def test_uses_own_keyring_convention_first(self, monkeypatch):
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
 
@@ -859,22 +853,24 @@ class TestTavilyApiKeyResolution:
         with patch("keyring.get_password", side_effect=fake_get_password):
             assert _tavily_api_key() == "own-key"
 
-    def test_falls_back_to_shared_lucys_foundry_keychain(self, monkeypatch):
+    def test_falls_back_to_default_shared_service(self, monkeypatch):
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.delenv("LINKEDIN_KEYRING_SERVICE", raising=False)
 
         def fake_get_password(service, account):
-            if service == "lucys-foundry" and account == "tavily":
+            if service == "linkedin-portability-explorer" and account == "tavily":
                 return "shared-key"
             return None
 
         with patch("keyring.get_password", side_effect=fake_get_password):
             assert _tavily_api_key() == "shared-key"
 
-    def test_falls_back_to_legacy_agent_fleet_rts(self, monkeypatch):
+    def test_honors_keyring_service_env_override(self, monkeypatch):
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+        monkeypatch.setenv("LINKEDIN_KEYRING_SERVICE", "my-legacy-service")
 
         def fake_get_password(service, account):
-            if service == "agent-fleet-rts" and account == "tavily":
+            if service == "my-legacy-service" and account == "tavily":
                 return "legacy-key"
             return None
 
