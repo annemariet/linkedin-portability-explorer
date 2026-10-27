@@ -10,7 +10,10 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import requests
 
-from linkedin_api.utils.token_secrets import read_app_credential
+from linkedin_api.utils.token_secrets import (
+    format_missing_app_credentials_message,
+    read_app_credential,
+)
 
 _AUTHORIZE_URL = "https://www.linkedin.com/oauth/v2/authorization"
 _TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
@@ -36,10 +39,15 @@ class TokenExchangeResult:
 def load_oauth_client_config() -> OAuthClientConfig:
     client_id = read_app_credential("LINKEDIN_CLIENT_ID")
     client_secret = read_app_credential("LINKEDIN_CLIENT_SECRET")
-    if not client_id or not client_secret:
-        raise ValueError(
-            "LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET must be set (env or keyring)"
-        )
+    missing: list[str] = []
+    if not client_id:
+        missing.append("LINKEDIN_CLIENT_ID")
+    if not client_secret:
+        missing.append("LINKEDIN_CLIENT_SECRET")
+    if missing:
+        raise ValueError(format_missing_app_credentials_message(missing))
+    assert client_id is not None
+    assert client_secret is not None
     redirect_uri = (
         os.getenv("LINKEDIN_OAUTH_REDIRECT_URI", _DEFAULT_REDIRECT).strip()
         or _DEFAULT_REDIRECT

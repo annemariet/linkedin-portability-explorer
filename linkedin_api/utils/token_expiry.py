@@ -10,17 +10,27 @@ from typing import Optional
 
 import requests
 
-from linkedin_api.utils.token_secrets import read_app_credential
+from linkedin_api.utils.token_secrets import (
+    format_missing_app_credentials_message,
+    missing_app_credential_names,
+    read_app_credential,
+)
 
 logger = logging.getLogger(__name__)
 
 _INTROSPECT_URL = "https://www.linkedin.com/oauth/v2/introspectToken"
 DEFAULT_WARN_DAYS_BEFORE_EXPIRY = 14
 
-_UNKNOWN_EXPIRY_MESSAGE = (
-    "Token expiry unknown — set LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET "
-    "to enable LinkedIn introspection."
+_INTROSPECTION_UNAVAILABLE_MESSAGE = (
+    "Token expiry unknown — LinkedIn introspection did not return expiry data."
 )
+
+
+def _unknown_expiry_message() -> str:
+    missing = missing_app_credential_names()
+    if missing:
+        return format_missing_app_credentials_message(missing)
+    return _INTROSPECTION_UNAVAILABLE_MESSAGE
 
 
 class TokenExpiryLevel(str, Enum):
@@ -138,7 +148,7 @@ def assess_token_expiry(
             level=TokenExpiryLevel.UNKNOWN,
             days_remaining=None,
             expires_on=None,
-            message=_UNKNOWN_EXPIRY_MESSAGE,
+            message=_unknown_expiry_message(),
         )
 
     if intro.status in ("expired", "revoked") or not intro.active:
@@ -161,7 +171,7 @@ def assess_token_expiry(
             level=TokenExpiryLevel.UNKNOWN,
             days_remaining=None,
             expires_on=None,
-            message=_UNKNOWN_EXPIRY_MESSAGE,
+            message=_INTROSPECTION_UNAVAILABLE_MESSAGE,
         )
 
     days_remaining = (expires - ref).days

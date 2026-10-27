@@ -2,7 +2,10 @@
 
 import pytest
 
-from linkedin_api.utils.token_oauth import parse_oauth_callback
+from linkedin_api.utils.token_oauth import (
+    load_oauth_client_config,
+    parse_oauth_callback,
+)
 
 
 class TestParseOauthCallback:
@@ -23,3 +26,17 @@ class TestParseOauthCallback:
     def test_rejects_bare_code(self):
         with pytest.raises(ValueError, match="full redirect URL"):
             parse_oauth_callback("abc123only", expected_state="expected-state")
+
+
+def test_load_oauth_config_missing_secret_message(monkeypatch):
+    monkeypatch.setenv("LINKEDIN_CLIENT_ID", "fixture-client-id")
+    monkeypatch.delenv("LINKEDIN_CLIENT_SECRET", raising=False)
+    monkeypatch.setenv("LINKEDIN_ACCOUNT", "user@example.com")
+    with pytest.raises(ValueError) as exc:
+        load_oauth_client_config()
+    msg = str(exc.value)
+    assert "Missing LINKEDIN_CLIENT_SECRET" in msg
+    assert "LINKEDIN_CLIENT_ID" not in msg
+    assert "security add-generic-password" in msg
+    assert '-a "user@example.com"' in msg
+    assert "OS keyring" in msg

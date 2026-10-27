@@ -55,6 +55,23 @@ class TestRetrieveSecret:
                 result = retrieve_secret(log_failures=True)
         assert result.issue == SecretRetrievalIssue.KEYRING_ERROR
 
+    def test_keyring_falls_back_to_empty_account(self, monkeypatch):
+        monkeypatch.delenv("LINKEDIN_CLIENT_SECRET", raising=False)
+        monkeypatch.setenv("LINKEDIN_ACCOUNT", "user@example.com")
+
+        def fake_get_password(service, account):
+            if service == "LINKEDIN_CLIENT_SECRET" and account == "user@example.com":
+                return None
+            if service == "LINKEDIN_CLIENT_SECRET" and account == "":
+                return "secret-from-empty-account"
+            return None
+
+        with patch("linkedin_api.utils.token_secrets.keyring") as mock_kr:
+            mock_kr.get_password.side_effect = fake_get_password
+            result = retrieve_secret("LINKEDIN_CLIENT_SECRET", log_failures=False)
+        assert result.issue == SecretRetrievalIssue.OK
+        assert result.value == "secret-from-empty-account"
+
 
 class TestTokenExpiry:
     def _intro(self, **kwargs):
@@ -76,10 +93,15 @@ class TestTokenExpiry:
         )
         assert status.level == TokenExpiryLevel.WARN
 
-    def test_unknown_includes_message(self):
-        status = assess_token_expiry(introspection=None, access_token=None)
+    def test_unknown_includes_message(self, monkeypatch):
+        monkeypatch.delenv("LINKEDIN_CLIENT_ID", raising=False)
+        monkeypatch.delenv("LINKEDIN_CLIENT_SECRET", raising=False)
+        status = assess_token_expiry(introspection=None, access_token="token-value")
         assert status.level == TokenExpiryLevel.UNKNOWN
         assert "LINKEDIN_CLIENT_ID" in status.message
+        assert "LINKEDIN_CLIENT_SECRET" in status.message
+        assert "security add-generic-password" in status.message
+        assert "OS keyring" in status.message
 
 
 @responses.activate

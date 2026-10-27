@@ -37,6 +37,28 @@ def access_token_keyring_service() -> str:
     return override or _TOKEN_VAR_DEFAULT
 
 
+def resolved_keyring_account(account_var: str = _ACCOUNT_VAR_DEFAULT) -> str:
+    return os.getenv(account_var, "")
+
+
+def macos_keychain_add_hint(
+    service: str = "LINKEDIN_CLIENT_SECRET",
+    account: str | None = None,
+) -> str:
+    """Copy-paste macOS ``security`` command (``-w`` prompts for the secret)."""
+    acct = resolved_keyring_account() if account is None else account
+    account_flag = f'-a "{acct}"' if acct else '-a ""'
+    return f"security add-generic-password -U -s {service} {account_flag} -w"
+
+
+def keyring_cli_add_hint(
+    service: str = "LINKEDIN_CLIENT_SECRET",
+    account: str | None = None,
+) -> str:
+    acct = resolved_keyring_account() if account is None else account
+    return f'python -m keyring set {service} "{acct}"'
+
+
 class SecretRetrievalIssue(str, Enum):
     OK = "ok"
     MISSING = "missing"
@@ -109,10 +131,10 @@ def retrieve_secret(
     )
     if keyring is not None:
         try:
-            secret = keyring.get_password(keyring_service, account)
-            if secret and secret.strip():
+            secret = _keyring_lookup(keyring_service, account)
+            if secret:
                 return SecretRetrievalResult(
-                    value=secret.strip(),
+                    value=secret,
                     source="keyring",
                     issue=SecretRetrievalIssue.OK,
                     env_var=token_var,
@@ -153,6 +175,41 @@ def retrieve_secret(
 def read_app_credential(var_name: str) -> Optional[str]:
     """Read app credential from env or keyring; never writes."""
     return retrieve_secret(var_name, log_failures=False).value
+
+
+def _keyring_lookup(service: str, account: str) -> Optional[str]:
+    if keyring is None:
+        return None
+    secret = keyring.get_password(service, account)
+    if secret and secret.strip():
+        return secret.strip()
+    if account:
+        fallback = keyring.get_password(service, "")
+        if fallback and fallback.strip():
+            return fallback.strip()
+    return None
+
+
+def missing_app_credential_names() -> list[str]:
+    missing: list[str] = []
+    if not read_app_credential("LINKEDIN_CLIENT_ID"):
+        missing.append("LINKEDIN_CLIENT_ID")
+    if not read_app_credential("LINKEDIN_CLIENT_SECRET"):
+        missing.append("LINKEDIN_CLIENT_SECRET")
+    return missing
+
+
+def format_missing_app_credentials_message(missing: list[str]) -> str:
+    if not missing:
+        return ""
+    names = ", ".join(missing)
+    lines = [
+        f"Missing {names} (checked environment variables and OS keyring).",
+    ]
+    for service in missing:
+        lines.append(f"macOS Keychain: {macos_keychain_add_hint(service)}")
+        lines.append(f"Cross-platform: {keyring_cli_add_hint(service)}")
+    return "\n".join(lines)
 
 
 def _fingerprint_path() -> Path:

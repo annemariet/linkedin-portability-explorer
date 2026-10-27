@@ -33,7 +33,7 @@ uv run linkedin-update-token --redirect-or-code 'https://your.redirect/callback?
 
 Flow:
 
-1. Reads **app credentials only** (never writes them): `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` from the environment or keyring (`LINKEDIN_ACCOUNT` as the keyring account, same as other secrets).
+1. Reads **app credentials only** (never writes them): `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET` from the environment or OS keyring. Keyring lookups use service name = env var name and account = `LINKEDIN_ACCOUNT`; if nothing is stored under that account, an entry with an **empty account** (`-a ""` on macOS) is also tried.
 2. Prints a browser-ready LinkedIn authorization URL (scope default `r_dma_portability_self_serve`; override with `LINKEDIN_OAUTH_SCOPE`). The app client id appears **only** in that URL on your terminal.
 3. You authorize in the browser; paste the **full redirect URL** (must include `code` and `state`; bare codes are rejected).
 4. Exchanges the code for an access token (and refresh token when LinkedIn returns one). **Tokens and the client secret are never logged.**
@@ -51,9 +51,33 @@ If `LINKEDIN_ACCESS_TOKEN` is still set in the environment, it **overrides** key
 
 Legacy manual paste: `uv run python scripts/setup_token.py` still works.
 
+## App credentials in macOS Keychain
+
+Set `LINKEDIN_ACCOUNT` in `.env` when you use a named keychain account; leave it unset to match entries stored with an empty account.
+
+**macOS (client secret, prompts for value with `-w`):**
+
+```bash
+security add-generic-password -U -s LINKEDIN_CLIENT_SECRET -a "${LINKEDIN_ACCOUNT:-}" -w
+```
+
+When `LINKEDIN_ACCOUNT` is unset, use `-a ""` explicitly:
+
+```bash
+security add-generic-password -U -s LINKEDIN_CLIENT_SECRET -a "" -w
+```
+
+**Cross-platform (Python keyring):**
+
+```bash
+python -m keyring set LINKEDIN_CLIENT_SECRET "${LINKEDIN_ACCOUNT:-}"
+```
+
+Use the same pattern with service `LINKEDIN_CLIENT_ID` for the app client id (not the member access token).
+
 ## Expiry warnings (introspection)
 
-With **`LINKEDIN_CLIENT_ID`** and **`LINKEDIN_CLIENT_SECRET`**, the checker calls LinkedIn [token introspection](https://learn.microsoft.com/en-us/linkedin/shared/authentication/token-introspection). Without them, expiry is unknown (exit `3`).
+With **`LINKEDIN_CLIENT_ID`** and **`LINKEDIN_CLIENT_SECRET`**, the checker calls LinkedIn [token introspection](https://learn.microsoft.com/en-us/linkedin/shared/authentication/token-introspection). Without them, expiry is unknown (exit `3`); CLI output lists what is missing and repeats the keychain commands above.
 
 ## Gradio / web boot
 
