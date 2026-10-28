@@ -346,6 +346,10 @@ LIMIT 12
 RETURN post, resource, person, comment, ref, creates, comments
 ```
 
+## Token health (deployments)
+
+Schedule **`uv run linkedin-check-token --warn-exit-code`** from any scheduler; renew with **`uv run linkedin-update-token`** (OAuth). See [docs/token-health.md](docs/token-health.md) for exit codes and env vars.
+
 ## Troubleshooting
 
 ### Token Expired

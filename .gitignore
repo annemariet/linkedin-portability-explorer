@@ -13,5 +13,6 @@ venv/
 
 *.json
 *.csv
+.linkedin_access_token_fingerprint
 *.sqlite3
 *.db
