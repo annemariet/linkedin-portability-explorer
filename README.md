@@ -47,7 +47,7 @@ LinkedIn API → activities.csv → pipeline (collect → enrich → fetch URLs 
                               content_store/ + resources/
 ```
 
-Downstream consumers (e.g. private vault export in amai-lab) should depend on the public `linkedin_api` API — not private `_` helpers.
+Downstream tools and integrations should depend on the public `linkedin_api` API — not private `_` helpers.
 
 ## Setup (auth)
 
@@ -75,6 +75,8 @@ uv run python scripts/setup_token.py
 ```
 
 This securely stores your token in macOS Keychain.
+
+Shared keyring service names (LLM/Tavily aliases) are configurable via `LINKEDIN_KEYRING_SERVICE` and optional legacy aliases; see [docs/keyring-migration.md](docs/keyring-migration.md).
 
 **Alternative: Environment Variable**
 
