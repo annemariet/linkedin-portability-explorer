@@ -37,6 +37,11 @@ def test_load_oauth_config_missing_secret_message(monkeypatch):
     msg = str(exc.value)
     assert "Missing LINKEDIN_CLIENT_SECRET" in msg
     assert "LINKEDIN_CLIENT_ID" not in msg
-    assert "security add-generic-password" in msg
-    assert '-a "user@example.com"' in msg
     assert "OS keyring" in msg
+    from linkedin_api.utils.token_secrets import format_missing_app_credentials_message
+
+    darwin_msg = format_missing_app_credentials_message(
+        ["LINKEDIN_CLIENT_SECRET"], platform="darwin"
+    )
+    assert "security add-generic-password" in darwin_msg
+    assert '-a "user@example.com"' in darwin_msg

@@ -46,6 +46,8 @@ class TokenHealthReport:
     expiry_level: Optional[TokenExpiryLevel]
     api_valid: Optional[bool]
     messages: tuple[str, ...]
+    token_source: Optional[str] = None
+    shadowing_warning: Optional[str] = None
 
 
 def _probe_token_api(
@@ -101,6 +103,7 @@ def build_token_health_report(
             expiry_level=None,
             api_valid=None,
             messages=tuple(messages),
+            token_source=retrieval.source,
         )
 
     detect_token_rotation(retrieval.value)
@@ -108,6 +111,11 @@ def build_token_health_report(
 
     api_valid: Optional[bool] = None
     level = TokenHealthLevel.OK
+
+    if retrieval.source:
+        messages.append(f"Access token source: {retrieval.source}.")
+    if retrieval.shadowing_warning:
+        messages.append(retrieval.shadowing_warning)
 
     if expiry.message:
         messages.append(expiry.message)
@@ -118,7 +126,6 @@ def build_token_health_report(
         level = TokenHealthLevel.WARN
     elif expiry.level == TokenExpiryLevel.UNKNOWN:
         level = TokenHealthLevel.UNKNOWN
-        logger.warning("linkedin_token_health %s", expiry.message)
 
     if probe_api:
         ok, err = _probe_token_api(retrieval.value)
@@ -133,6 +140,8 @@ def build_token_health_report(
         expiry_level=expiry.level,
         api_valid=api_valid,
         messages=tuple(messages),
+        token_source=retrieval.source,
+        shadowing_warning=retrieval.shadowing_warning,
     )
 
 

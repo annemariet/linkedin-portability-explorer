@@ -33,6 +33,18 @@ def _unknown_expiry_message() -> str:
     return _INTROSPECTION_UNAVAILABLE_MESSAGE
 
 
+def _introspection_date_clause(intro: TokenIntrospection, *, expired: bool) -> str:
+    parts: list[str] = []
+    if intro.issued_on is not None:
+        parts.append(f"created {intro.issued_on.isoformat()}")
+    if intro.expires_on is not None:
+        if expired:
+            parts.append(f"expired {intro.expires_on.isoformat()}")
+        else:
+            parts.append(f"expires {intro.expires_on.isoformat()}")
+    return ", ".join(parts)
+
+
 class TokenExpiryLevel(str, Enum):
     OK = "ok"
     WARN = "warn"
@@ -154,15 +166,19 @@ def assess_token_expiry(
     if intro.status in ("expired", "revoked") or not intro.active:
         ref_expiry = intro.expires_on or ref
         days_remaining = (ref_expiry - ref).days
+        dates = _introspection_date_clause(intro, expired=True)
+        status_part = (
+            f"LinkedIn reports token status={intro.status or 'inactive'} "
+            f"(introspection"
+        )
+        if dates:
+            status_part += f", {dates}"
+        status_part += "). Renew at https://www.linkedin.com/developers/tools/oauth"
         return TokenExpiryStatus(
             level=TokenExpiryLevel.EXPIRED,
             days_remaining=days_remaining,
             expires_on=intro.expires_on,
-            message=(
-                f"LinkedIn reports token status={intro.status or 'inactive'} "
-                f"(introspection). Renew at "
-                "https://www.linkedin.com/developers/tools/oauth"
-            ),
+            message=status_part,
         )
 
     expires = intro.expires_on
@@ -175,13 +191,18 @@ def assess_token_expiry(
         )
 
     days_remaining = (expires - ref).days
+    dates_active = _introspection_date_clause(intro, expired=False)
+    date_suffix = f" ({dates_active})" if dates_active else ""
+
     if days_remaining < 0:
+        dates_exp = _introspection_date_clause(intro, expired=True)
+        detail = dates_exp or f"expired {expires.isoformat()}"
         return TokenExpiryStatus(
             level=TokenExpiryLevel.EXPIRED,
             days_remaining=days_remaining,
             expires_on=expires,
             message=(
-                f"LinkedIn access token expired on {expires.isoformat()}. "
+                f"LinkedIn access token expired ({detail}). "
                 "Renew at https://www.linkedin.com/developers/tools/oauth"
             ),
         )
@@ -191,7 +212,7 @@ def assess_token_expiry(
             days_remaining=days_remaining,
             expires_on=expires,
             message=(
-                f"LinkedIn access token expires on {expires.isoformat()} "
+                f"LinkedIn access token expires soon{date_suffix} "
                 f"({days_remaining} day(s) remaining). Renew before deactivation."
             ),
         )
@@ -200,7 +221,6 @@ def assess_token_expiry(
         days_remaining=days_remaining,
         expires_on=expires,
         message=(
-            f"LinkedIn token OK — expires {expires.isoformat()} "
-            f"({days_remaining} day(s) remaining)."
+            f"LinkedIn token OK{date_suffix} " f"({days_remaining} day(s) remaining)."
         ),
     )

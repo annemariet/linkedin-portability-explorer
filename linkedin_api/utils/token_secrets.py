@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -72,6 +73,25 @@ class SecretRetrievalResult:
     source: Optional[str]
     issue: SecretRetrievalIssue
     env_var: str
+    shadowing_warning: Optional[str] = None
+
+
+def _format_keyring_source(service: str, account_used: str) -> str:
+    acct_display = account_used if account_used else ""
+    return f'keyring (service={service}, account="{acct_display}")'
+
+
+def _shadowing_warning_message(
+    env_var: str,
+    *,
+    keyring_service: str,
+    keyring_account_used: str,
+) -> str:
+    acct = keyring_account_used if keyring_account_used else ""
+    return (
+        f"{env_var} in the environment (or .env) is shadowing a different token "
+        f"stored in OS keyring ({_format_keyring_source(keyring_service, acct)})."
+    )
 
 
 def _log_retrieval_failure(result: SecretRetrievalResult) -> None:
@@ -109,11 +129,31 @@ def retrieve_secret(
     if env_raw is not None:
         env_value = env_raw.strip()
         if env_value:
+            shadowing: Optional[str] = None
+            keyring_service = (
+                access_token_keyring_service()
+                if token_var == _TOKEN_VAR_DEFAULT
+                else token_var
+            )
+            account = os.getenv(account_var, "")
+            try:
+                kr_value, kr_account_used = _keyring_lookup_detailed(
+                    keyring_service, account
+                )
+            except Exception:
+                kr_value, kr_account_used = None, account
+            if kr_value and token_fingerprint(kr_value) != token_fingerprint(env_value):
+                shadowing = _shadowing_warning_message(
+                    token_var,
+                    keyring_service=keyring_service,
+                    keyring_account_used=kr_account_used,
+                )
             return SecretRetrievalResult(
                 value=env_value,
-                source="env",
+                source=f"env:{token_var}",
                 issue=SecretRetrievalIssue.OK,
                 env_var=token_var,
+                shadowing_warning=shadowing,
             )
         result = SecretRetrievalResult(
             value=None,
@@ -131,11 +171,11 @@ def retrieve_secret(
     )
     if keyring is not None:
         try:
-            secret = _keyring_lookup(keyring_service, account)
+            secret, account_used = _keyring_lookup_detailed(keyring_service, account)
             if secret:
                 return SecretRetrievalResult(
                     value=secret,
-                    source="keyring",
+                    source=_format_keyring_source(keyring_service, account_used),
                     issue=SecretRetrievalIssue.OK,
                     env_var=token_var,
                 )
@@ -177,17 +217,23 @@ def read_app_credential(var_name: str) -> Optional[str]:
     return retrieve_secret(var_name, log_failures=False).value
 
 
-def _keyring_lookup(service: str, account: str) -> Optional[str]:
+def _keyring_lookup_detailed(service: str, account: str) -> tuple[Optional[str], str]:
+    """Return (secret, account label used for keyring lookup)."""
     if keyring is None:
-        return None
+        return None, account
     secret = keyring.get_password(service, account)
     if secret and secret.strip():
-        return secret.strip()
+        return secret.strip(), account
     if account:
         fallback = keyring.get_password(service, "")
         if fallback and fallback.strip():
-            return fallback.strip()
-    return None
+            return fallback.strip(), ""
+    return None, account
+
+
+def _keyring_lookup(service: str, account: str) -> Optional[str]:
+    value, _ = _keyring_lookup_detailed(service, account)
+    return value
 
 
 def missing_app_credential_names() -> list[str]:
@@ -199,16 +245,24 @@ def missing_app_credential_names() -> list[str]:
     return missing
 
 
-def format_missing_app_credentials_message(missing: list[str]) -> str:
+def format_missing_app_credentials_message(
+    missing: list[str],
+    *,
+    platform: str | None = None,
+) -> str:
     if not missing:
         return ""
     names = ", ".join(missing)
+    plat = platform if platform is not None else sys.platform
     lines = [
         f"Missing {names} (checked environment variables and OS keyring).",
+        "Add credential(s):",
     ]
     for service in missing:
-        lines.append(f"macOS Keychain: {macos_keychain_add_hint(service)}")
-        lines.append(f"Cross-platform: {keyring_cli_add_hint(service)}")
+        if plat == "darwin":
+            lines.append(f"  • {macos_keychain_add_hint(service)}")
+        else:
+            lines.append(f"  • {keyring_cli_add_hint(service)}")
     return "\n".join(lines)
 
 

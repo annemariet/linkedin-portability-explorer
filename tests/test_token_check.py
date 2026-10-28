@@ -13,6 +13,7 @@ from linkedin_api.utils.token_check import (
     EXIT_EXPIRY_UNKNOWN,
     EXIT_OK,
     EXIT_WARN,
+    build_token_health_report,
     exit_code_for_report,
     log_startup_token_health,
     main,
@@ -26,6 +27,7 @@ from linkedin_api.utils.token_expiry import (
 from linkedin_api.utils.token_secrets import (
     SecretRetrievalIssue,
     detect_token_rotation,
+    format_missing_app_credentials_message,
     retrieve_secret,
     token_fingerprint,
 )
@@ -38,7 +40,7 @@ class TestRetrieveSecret:
             mock_kr.get_password.return_value = "keyring-token-value-here"
             result = retrieve_secret(log_failures=False)
         assert result.issue == SecretRetrievalIssue.OK
-        assert result.source == "env"
+        assert result.source == "env:LINKEDIN_ACCESS_TOKEN"
 
     def test_no_keyring_backend_is_missing_not_keyring_error(self, monkeypatch):
         monkeypatch.delenv("LINKEDIN_ACCESS_TOKEN", raising=False)
@@ -71,6 +73,39 @@ class TestRetrieveSecret:
             result = retrieve_secret("LINKEDIN_CLIENT_SECRET", log_failures=False)
         assert result.issue == SecretRetrievalIssue.OK
         assert result.value == "secret-from-empty-account"
+        assert 'account=""' in (result.source or "")
+
+    def test_env_shadowing_warning_when_keyring_differs(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", "env-token-value-here-xxxxxxxx")
+        monkeypatch.setenv("LINKEDIN_ACCOUNT", "user@example.com")
+        with patch("linkedin_api.utils.token_secrets.keyring") as mock_kr:
+            mock_kr.get_password.side_effect = lambda svc, acct: (
+                "keyring-token-value-here-yyyyyyyy"
+                if svc == "LINKEDIN_ACCESS_TOKEN" and acct == "user@example.com"
+                else None
+            )
+            result = retrieve_secret(log_failures=False)
+        assert result.issue == SecretRetrievalIssue.OK
+        assert result.shadowing_warning is not None
+        assert "shadowing" in result.shadowing_warning.lower()
+        assert "user@example.com" in result.shadowing_warning
+
+
+class TestFormatMissingCredentials:
+    def test_darwin_shows_security_only(self):
+        msg = format_missing_app_credentials_message(
+            ["LINKEDIN_CLIENT_SECRET"], platform="darwin"
+        )
+        assert "security add-generic-password" in msg
+        assert "python -m keyring" not in msg
+        assert "  • " in msg
+
+    def test_linux_shows_keyring_cli_only(self):
+        msg = format_missing_app_credentials_message(
+            ["LINKEDIN_CLIENT_SECRET"], platform="linux"
+        )
+        assert "python -m keyring set" in msg
+        assert "security add-generic-password" not in msg
 
 
 class TestTokenExpiry:
@@ -88,10 +123,42 @@ class TestTokenExpiry:
     def test_warn_when_within_window(self):
         status = assess_token_expiry(
             today=date(2026, 10, 20),
-            introspection=self._intro(expires_on=date(2026, 11, 1)),
+            introspection=self._intro(
+                expires_on=date(2026, 11, 1),
+                issued_on=date(2026, 10, 1),
+            ),
             warn_days=14,
         )
         assert status.level == TokenExpiryLevel.WARN
+        assert "created 2026-10-01" in status.message
+        assert "expires 2026-11-01" in status.message
+
+    def test_ok_includes_created_and_expires(self):
+        status = assess_token_expiry(
+            today=date(2026, 10, 1),
+            introspection=self._intro(
+                expires_on=date(2026, 12, 1),
+                issued_on=date(2026, 6, 1),
+            ),
+            warn_days=14,
+        )
+        assert status.level == TokenExpiryLevel.OK
+        assert "created 2026-06-01" in status.message
+        assert "expires 2026-12-01" in status.message
+
+    def test_expired_status_includes_dates(self):
+        status = assess_token_expiry(
+            today=date(2026, 10, 1),
+            introspection=self._intro(
+                active=False,
+                status="expired",
+                expires_on=date(2026, 9, 1),
+                issued_on=date(2026, 3, 1),
+            ),
+        )
+        assert status.level == TokenExpiryLevel.EXPIRED
+        assert "created 2026-03-01" in status.message
+        assert "expired 2026-09-01" in status.message
 
     def test_unknown_includes_message(self, monkeypatch):
         monkeypatch.delenv("LINKEDIN_CLIENT_ID", raising=False)
@@ -100,7 +167,6 @@ class TestTokenExpiry:
         assert status.level == TokenExpiryLevel.UNKNOWN
         assert "LINKEDIN_CLIENT_ID" in status.message
         assert "LINKEDIN_CLIENT_SECRET" in status.message
-        assert "security add-generic-password" in status.message
         assert "OS keyring" in status.message
 
 
@@ -152,6 +218,27 @@ class TestCliMain:
         assert exc.value.code == EXIT_EXPIRY_UNKNOWN
         assert "UNKNOWN:" in capsys.readouterr().out
 
+    def test_cli_prints_token_source_once(self, monkeypatch, capsys):
+        monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", "a" * 40)
+        monkeypatch.setenv("LINKEDIN_CLIENT_ID", "cid")
+        monkeypatch.setenv("LINKEDIN_CLIENT_SECRET", "secret")
+        with patch(
+            "linkedin_api.utils.token_expiry.introspect_access_token",
+            return_value=TokenIntrospection(
+                active=True,
+                status="active",
+                expires_on=date(2099, 1, 1),
+                issued_on=date(2026, 1, 1),
+                scope=None,
+            ),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                main([])
+        assert exc.value.code == EXIT_OK
+        out = capsys.readouterr().out
+        assert out.count("Access token source:") == 1
+        assert "env:LINKEDIN_ACCESS_TOKEN" in out
+
     def test_exit_codes(self):
         from linkedin_api.utils.token_check import TokenHealthLevel, TokenHealthReport
         from linkedin_api.utils.token_secrets import SecretRetrievalIssue
@@ -165,6 +252,42 @@ class TestCliMain:
         )
         assert exit_code_for_report(r, warn_exit_code=True) == EXIT_WARN
         assert exit_code_for_report(r, warn_exit_code=False) == EXIT_OK
+
+
+class TestBuildTokenHealthReportLogging:
+    def test_build_does_not_log_unknown_expiry(self, monkeypatch, caplog):
+        monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", "a" * 40)
+        monkeypatch.delenv("LINKEDIN_CLIENT_ID", raising=False)
+        monkeypatch.delenv("LINKEDIN_CLIENT_SECRET", raising=False)
+        with caplog.at_level(logging.WARNING):
+            build_token_health_report(probe_api=False)
+        assert not any("linkedin_token_health" in r.message for r in caplog.records)
+
+    def test_startup_still_logs_unknown(self, monkeypatch, caplog):
+        monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", "a" * 40)
+        monkeypatch.delenv("LINKEDIN_CLIENT_ID", raising=False)
+        monkeypatch.delenv("LINKEDIN_CLIENT_SECRET", raising=False)
+        with caplog.at_level(logging.WARNING):
+            log_startup_token_health(probe_api=False)
+        assert any("linkedin_token_health" in r.message for r in caplog.records)
+
+    def test_report_includes_token_source(self, monkeypatch):
+        monkeypatch.setenv("LINKEDIN_ACCESS_TOKEN", "a" * 40)
+        monkeypatch.setenv("LINKEDIN_CLIENT_ID", "cid")
+        monkeypatch.setenv("LINKEDIN_CLIENT_SECRET", "secret")
+        with patch(
+            "linkedin_api.utils.token_expiry.introspect_access_token",
+            return_value=TokenIntrospection(
+                active=True,
+                status="active",
+                expires_on=date(2099, 1, 1),
+                issued_on=date(2026, 1, 1),
+                scope=None,
+            ),
+        ):
+            report = build_token_health_report(probe_api=False)
+        assert report.token_source == "env:LINKEDIN_ACCESS_TOKEN"
+        assert any("Access token source:" in m for m in report.messages)
 
 
 class TestLogStartupTokenHealth:

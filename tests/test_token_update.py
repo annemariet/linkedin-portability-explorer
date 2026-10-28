@@ -54,7 +54,11 @@ class TestRunUpdateRedaction:
                             retrieval_issue=SecretRetrievalIssue.OK,
                             expiry_level=None,
                             api_valid=None,
-                            messages=("Token OK",),
+                            messages=(
+                                "Access token source: env:LINKEDIN_ACCESS_TOKEN.",
+                                "Token OK",
+                            ),
+                            token_source="env:LINKEDIN_ACCESS_TOKEN",
                         )
                         with caplog.at_level(logging.DEBUG):
                             code = run_update(
