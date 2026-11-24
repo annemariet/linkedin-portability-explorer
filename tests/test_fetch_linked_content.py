@@ -11,6 +11,7 @@ import pytest
 from linkedin_api.content_store import load_metadata, save_content, save_metadata
 from linkedin_api.fetch_linked_content import (
     FetchResult,
+    _content_type_ok_for_html_fetch,
     _fetch_tavily,
     _iter_posts_with_urls,
     _resource_dir,
@@ -79,19 +80,25 @@ class TestTextLooksBinary:
         body = "Article paragraph.\n" * 40
         assert _text_looks_binary(body) is False
 
-    def test_jpeg_marker_in_title(self) -> None:
-        assert _text_looks_binary("JFIF\x00" + "x" * 200) is True
+    def test_jpeg_marker_without_nul(self) -> None:
+        assert _text_looks_binary("JFIF" + "x" * 200) is True
 
     def test_gif_magic_bytes(self) -> None:
         assert _text_looks_binary("GIF89a" + "x" * 200) is True
 
-    def test_non_printable_above_threshold(self) -> None:
-        sample = "a" * 200 + "\x01" * 12
-        assert _text_looks_binary(sample) is True
+    def test_nul_bytes_only(self) -> None:
+        assert _text_looks_binary("\x00" * 20) is True
 
-    def test_non_printable_at_threshold_not_binary(self) -> None:
-        sample = "a" * 200 + "\x01" * 8
+    def test_tab_heavy_text_not_binary(self) -> None:
+        sample = "word\t" * 80 + "\n" * 5
         assert _text_looks_binary(sample) is False
+
+    def test_control_chars_at_threshold_on_210_sample(self) -> None:
+        # len==210 → threshold max(8, 210//20)==10; exactly 10 control bytes → not binary.
+        assert _text_looks_binary("a" * 199 + "\x01" * 10) is False
+
+    def test_control_chars_one_over_threshold_on_210_sample(self) -> None:
+        assert _text_looks_binary("a" * 199 + "\x01" * 11) is True
 
     def test_export_rejects_jfif_title_via_is_exportable(self) -> None:
         assert (
@@ -104,6 +111,24 @@ class TestTextLooksBinary:
             )
             is False
         )
+
+
+@pytest.mark.mutmut_guard
+class TestContentTypeOkForHtmlFetch:
+    def test_text_plain_allowed(self) -> None:
+        assert _content_type_ok_for_html_fetch("text/plain") is True
+
+    def test_text_html_allowed(self) -> None:
+        assert _content_type_ok_for_html_fetch("text/html") is True
+
+    def test_xhtml_allowed(self) -> None:
+        assert _content_type_ok_for_html_fetch("application/xhtml+xml") is True
+
+    def test_image_jpeg_rejected(self) -> None:
+        assert _content_type_ok_for_html_fetch("image/jpeg") is False
+
+    def test_application_octet_stream_rejected(self) -> None:
+        assert _content_type_ok_for_html_fetch("application/octet-stream") is False
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +207,30 @@ class TestFetchLinkedContent:
         assert result.ok
         assert result.title == "Datadog post"
         assert "Leadership notes" in result.content
+
+    @pytest.mark.mutmut_guard
+    def test_accepts_xhtml_content_type(self):
+        html = "<html><head><title>XHTML</title></head><body><p>OK</p></body></html>"
+        with patch(
+            "requests.get",
+            return_value=_mock_get_response(html, content_type="application/xhtml+xml"),
+        ):
+            result = fetch_linked_content(
+                "https://example.com/xhtml-body", resolve_redirects=False
+            )
+        assert result.ok
+        assert result.title == "XHTML"
+
+    def test_missing_content_type_header_fetches(self):
+        html = "<html><head><title>No CT</title></head><body><p>OK</p></body></html>"
+        resp = _mock_get_response(html)
+        resp.headers = {}
+        with patch("requests.get", return_value=resp):
+            result = fetch_linked_content(
+                "https://example.com/no-content-type", resolve_redirects=False
+            )
+        assert result.ok
+        assert result.title == "No CT"
 
     @pytest.mark.mutmut_guard
     def test_accepts_text_plain_content_type(self):

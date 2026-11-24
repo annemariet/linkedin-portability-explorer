@@ -499,6 +499,39 @@ class TestMediaResourceUrlNarrow:
         assert not is_media_resource_url(pdf)
         assert not should_ignore_url(pdf)
 
+    def test_dms_video_on_licdn_cdn(self) -> None:
+        url = "https://media.licdn.com/dms/video/v2/C4E05AQH/example/playlist"
+        assert is_media_resource_url(url) is True
+
+    def test_http_scheme_licdn_dms_image(self) -> None:
+        url = "http://media.licdn.com/dms/image/v2/C4E03AQG/example/0"
+        assert is_media_resource_url(url) is True
+
+    def test_lookalike_host_not_media(self) -> None:
+        assert (
+            is_media_resource_url("https://media.evil-licdn.com/dms/image/x/0") is False
+        )
+        assert (
+            is_media_resource_url("https://media.licdn.com.evil.org/dms/image/x/0")
+            is False
+        )
+
+    def test_licdn_non_dms_path_not_media(self) -> None:
+        assert (
+            is_media_resource_url(
+                "https://static.licdn.com/sc/h/br/931393/artdeco-icons.svg"
+            )
+            is False
+        )
+
+    def test_licdn_dms_without_image_or_video_segment(self) -> None:
+        assert (
+            is_media_resource_url(
+                "https://media.licdn.com/dms/sp/artifacts/example.bin"
+            )
+            is False
+        )
+
     def test_extract_classified_links_keeps_pdf_arxiv_drops_feedshare(self) -> None:
         arxiv = "https://arxiv.org/pdf/2511.00592"
         pdf = "https://weekly.example/report.pdf"

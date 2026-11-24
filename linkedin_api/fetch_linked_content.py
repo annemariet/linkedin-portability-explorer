@@ -219,14 +219,14 @@ _BINARY_PREFIXES = (
 )
 
 
-def _content_type_ok_for_html_fetch(content_type: str) -> bool:
-    """Allow HTML and other text/* responses; reject binary/media types."""
-    ct = (content_type or "").split(";", 1)[0].strip().lower()
-    if not ct:
+def _content_type_ok_for_html_fetch(media_type: str) -> bool:
+    """Allow HTML and other text/* responses; reject binary/media types.
+
+    ``media_type`` must be the primary MIME token only (lowercased, no parameters).
+    """
+    if media_type == "application/xhtml+xml":
         return True
-    if ct == "application/xhtml+xml":
-        return True
-    return ct.startswith("text/")
+    return media_type.startswith("text/")
 
 
 def _decode_response_bytes(raw: bytes, resp: requests.Response) -> str:

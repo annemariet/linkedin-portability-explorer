@@ -34,7 +34,7 @@ def cdn_expires_at_iso(url: str) -> str | None:
     return datetime.fromtimestamp(ts, tz=UTC).isoformat()
 
 
-def _is_linkedin_cdn_host(host: str) -> bool:
+def is_linkedin_cdn_host(host: str) -> bool:
     h = (host or "").lower()
     return h == "licdn.com" or h.endswith(".licdn.com")
 
@@ -44,7 +44,7 @@ def is_linkedin_post_image_url(url: str) -> bool:
     parsed = urlparse((url or "").strip())
     if parsed.scheme != "https":
         return False
-    if not _is_linkedin_cdn_host(parsed.netloc or ""):
+    if not is_linkedin_cdn_host(parsed.netloc or ""):
         return False
     if not _LICDN_IMAGE_PATH_RE.search(parsed.path or ""):
         return False
@@ -62,7 +62,7 @@ def cdn_url_identity(url: str) -> str:
     """
     parsed = urlparse((url or "").strip())
     base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-    if _is_linkedin_cdn_host(parsed.netloc or "") and _LICDN_IMAGE_PATH_RE.search(
+    if is_linkedin_cdn_host(parsed.netloc or "") and _LICDN_IMAGE_PATH_RE.search(
         parsed.path or ""
     ):
         return base

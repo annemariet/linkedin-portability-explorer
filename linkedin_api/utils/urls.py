@@ -8,6 +8,8 @@ import re
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse, urlunparse
 
+from linkedin_api.post_images import is_linkedin_cdn_host
+
 
 def linkedin_hashtag_keyword(url: str) -> Optional[str]:
     """Hashtag text from a LinkedIn hashtag URL, or None if not a hashtag link."""
@@ -563,31 +565,12 @@ def is_x_status_url(url: str) -> bool:
 _LICDN_DMS_MEDIA_PATH_RE = re.compile(r"/dms/(?:image|video)/", re.I)
 
 
-def _is_licdn_host(host: str) -> bool:
-    h = (host or "").lower()
-    if h.startswith("www."):
-        h = h[4:]
-    return h == "licdn.com" or h.endswith(".licdn.com")
-
-
 def is_media_resource_url(url: str) -> bool:
     """True for LinkedIn CDN ``/dms/image`` or ``/dms/video`` URLs (not article links)."""
-    raw = (url or "").strip()
-    if not raw:
-        return False
-    from linkedin_api.post_images import is_linkedin_post_image_url
-
-    if is_linkedin_post_image_url(raw):
-        return True
-    try:
-        parsed = urlparse(raw)
-        host = (parsed.hostname or "").lower()
-        path = parsed.path or ""
-    except Exception:
-        return False
-    if not _is_licdn_host(host):
-        return False
-    return bool(_LICDN_DMS_MEDIA_PATH_RE.search(path))
+    parsed = urlparse((url or "").strip())
+    return is_linkedin_cdn_host(parsed.hostname or "") and bool(
+        _LICDN_DMS_MEDIA_PATH_RE.search(parsed.path or "")
+    )
 
 
 def should_ignore_url(url: str) -> bool:
