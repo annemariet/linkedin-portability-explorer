@@ -119,7 +119,9 @@ class TestFetchLinkedContent:
         assert result.ok is False
 
     def test_skips_non_html_content_type_even_for_article_url(self):
-        html = "<html><head><title>Never used</title></head><body><p>x</p></body></html>"
+        html = (
+            "<html><head><title>Never used</title></head><body><p>x</p></body></html>"
+        )
         resp = _mock_get_response(html, content_type="image/jpeg")
         with patch("requests.get", return_value=resp) as mock_get:
             result = fetch_linked_content(
