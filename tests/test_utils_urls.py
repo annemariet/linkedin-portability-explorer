@@ -11,9 +11,15 @@ from linkedin_api.utils.urls import (
     extract_urls_from_text,
     is_linkedin_internal_url,
     is_linkedin_mention_url,
+    is_media_resource_url,
     linkedin_mention_type,
     resolve_redirect,
     should_ignore_url,
+)
+
+_FEEDSHARE_CDN = (
+    "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
+    "?e=2147483647&t=signed"
 )
 
 
@@ -476,3 +482,60 @@ class TestShouldIgnoreUrl:
 
     def test_external_url(self):
         assert should_ignore_url("https://github.com/repo") is False
+
+
+@pytest.mark.mutmut_guard
+class TestMediaResourceUrlNarrow:
+    def test_feedshare_cdn_is_media(self) -> None:
+        assert is_media_resource_url(_FEEDSHARE_CDN)
+
+    def test_arxiv_pdf_not_media_or_ignored(self) -> None:
+        arxiv = "https://arxiv.org/pdf/2511.00592"
+        assert not is_media_resource_url(arxiv)
+        assert not should_ignore_url(arxiv)
+
+    def test_external_pdf_not_ignored(self) -> None:
+        pdf = "https://example.com/report.pdf"
+        assert not is_media_resource_url(pdf)
+        assert not should_ignore_url(pdf)
+
+    def test_dms_video_on_licdn_cdn(self) -> None:
+        url = "https://media.licdn.com/dms/video/v2/C4E05AQH/example/playlist"
+        assert is_media_resource_url(url) is True
+
+    def test_http_scheme_licdn_dms_image(self) -> None:
+        url = "http://media.licdn.com/dms/image/v2/C4E03AQG/example/0"
+        assert is_media_resource_url(url) is True
+
+    def test_lookalike_host_not_media(self) -> None:
+        assert (
+            is_media_resource_url("https://media.evil-licdn.com/dms/image/x/0") is False
+        )
+        assert (
+            is_media_resource_url("https://media.licdn.com.evil.org/dms/image/x/0")
+            is False
+        )
+
+    def test_licdn_non_dms_path_not_media(self) -> None:
+        assert (
+            is_media_resource_url(
+                "https://static.licdn.com/sc/h/br/931393/artdeco-icons.svg"
+            )
+            is False
+        )
+
+    def test_licdn_dms_without_image_or_video_segment(self) -> None:
+        assert (
+            is_media_resource_url(
+                "https://media.licdn.com/dms/sp/artifacts/example.bin"
+            )
+            is False
+        )
+
+    def test_extract_classified_links_keeps_pdf_arxiv_drops_feedshare(self) -> None:
+        arxiv = "https://arxiv.org/pdf/2511.00592"
+        pdf = "https://weekly.example/report.pdf"
+        urls, _mentions, _tags = extract_classified_links([_FEEDSHARE_CDN, arxiv, pdf])
+        assert arxiv in urls
+        assert pdf in urls
+        assert _FEEDSHARE_CDN not in urls

@@ -11,9 +11,11 @@ import pytest
 from linkedin_api.content_store import load_metadata, save_content, save_metadata
 from linkedin_api.fetch_linked_content import (
     FetchResult,
+    _content_type_ok_for_html_fetch,
     _fetch_tavily,
     _iter_posts_with_urls,
     _resource_dir,
+    _text_looks_binary,
     _tavily_api_key,
     _url_stem,
     fetch_linked_content,
@@ -31,14 +33,18 @@ def use_tmp_data_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
 
 
-def _mock_get_response(html: str, status_code: int = 200) -> MagicMock:
+def _mock_get_response(
+    html: str, status_code: int = 200, *, content_type: str = "text/html"
+) -> MagicMock:
     """Build a requests.get mock that supports iter_content (streaming)."""
     resp = MagicMock()
     resp.status_code = status_code
     resp.encoding = "utf-8"
     resp.text = html  # kept for tests that still read .text directly
+    resp.headers = {"Content-Type": content_type}
     raw = html.encode("utf-8")
     resp.iter_content.return_value = iter([raw])
+    resp.close = MagicMock()
     return resp
 
 
@@ -63,6 +69,66 @@ class TestFetchResult:
     def test_not_ok_empty(self):
         r = FetchResult(url="https://example.com")
         assert r.ok is False
+
+
+@pytest.mark.mutmut_guard
+class TestTextLooksBinary:
+    def test_empty_is_false(self) -> None:
+        assert _text_looks_binary("") is False
+
+    def test_plain_text_below_threshold(self) -> None:
+        body = "Article paragraph.\n" * 40
+        assert _text_looks_binary(body) is False
+
+    def test_jpeg_marker_without_nul(self) -> None:
+        assert _text_looks_binary("JFIF" + "x" * 200) is True
+
+    def test_gif_magic_bytes(self) -> None:
+        assert _text_looks_binary("GIF89a" + "x" * 200) is True
+
+    def test_nul_bytes_only(self) -> None:
+        assert _text_looks_binary("\x00" * 20) is True
+
+    def test_tab_heavy_text_not_binary(self) -> None:
+        sample = "word\t" * 80 + "\n" * 5
+        assert _text_looks_binary(sample) is False
+
+    def test_control_chars_at_threshold_on_210_sample(self) -> None:
+        # len==210 → threshold max(8, 210//20)==10; exactly 10 control bytes → not binary.
+        assert _text_looks_binary("a" * 199 + "\x01" * 10) is False
+
+    def test_control_chars_one_over_threshold_on_210_sample(self) -> None:
+        assert _text_looks_binary("a" * 199 + "\x01" * 11) is True
+
+    def test_export_rejects_jfif_title_via_is_exportable(self) -> None:
+        assert (
+            is_exportable_resource(
+                FetchResult(
+                    url="https://example.com/x",
+                    title="JFIF bad",
+                    content="Enough body text here.\n" * 5,
+                )
+            )
+            is False
+        )
+
+
+@pytest.mark.mutmut_guard
+class TestContentTypeOkForHtmlFetch:
+    def test_text_plain_allowed(self) -> None:
+        assert _content_type_ok_for_html_fetch("text/plain") is True
+
+    def test_text_html_allowed(self) -> None:
+        assert _content_type_ok_for_html_fetch("text/html") is True
+
+    def test_xhtml_allowed(self) -> None:
+        assert _content_type_ok_for_html_fetch("application/xhtml+xml") is True
+
+    def test_image_jpeg_rejected(self) -> None:
+        assert _content_type_ok_for_html_fetch("image/jpeg") is False
+
+    def test_application_octet_stream_rejected(self) -> None:
+        assert _content_type_ok_for_html_fetch("application/octet-stream") is False
 
 
 # ---------------------------------------------------------------------------
@@ -100,15 +166,91 @@ class TestFetchLinkedContent:
         result = fetch_linked_content(
             "https://example.com/photo.png", resolve_redirects=False
         )
-        assert "skipped" in result.error
+        assert result.error == "skipped (image)"
         assert result.ok is False
+
+    @pytest.mark.mutmut_guard
+    def test_skips_linkedin_feedshare_cdn_without_fetch(self):
+        feedshare = (
+            "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
+            "?e=2147483647&t=signed"
+        )
+        with patch("requests.get") as mock_get:
+            result = fetch_linked_content(feedshare, resolve_redirects=False)
+        mock_get.assert_not_called()
+        assert result.error == "ignored"
+        assert result.ok is False
+
+    @pytest.mark.mutmut_guard
+    def test_skips_non_html_content_type_even_for_article_url(self):
+        html = (
+            "<html><head><title>Never used</title></head><body><p>x</p></body></html>"
+        )
+        resp = _mock_get_response(html, content_type="image/jpeg")
+        with patch("requests.get", return_value=resp) as mock_get:
+            result = fetch_linked_content(
+                "https://example.com/looks-like-article", resolve_redirects=False
+            )
+        assert mock_get.called
+        assert not result.ok
+        assert result.error.startswith("non-text content-type (image/jpeg)")
+
+    def test_catalogs_normal_html_article(self):
+        html = (
+            "<html><head><title>Datadog post</title></head>"
+            "<body><p>" + ("Leadership notes. " * 30) + "</p></body></html>"
+        )
+        with patch("requests.get", return_value=_mock_get_response(html)):
+            result = fetch_linked_content(
+                "https://example.com/datadog-leadership", resolve_redirects=False
+            )
+        assert result.ok
+        assert result.title == "Datadog post"
+        assert "Leadership notes" in result.content
+
+    @pytest.mark.mutmut_guard
+    def test_accepts_xhtml_content_type(self):
+        html = "<html><head><title>XHTML</title></head><body><p>OK</p></body></html>"
+        with patch(
+            "requests.get",
+            return_value=_mock_get_response(html, content_type="application/xhtml+xml"),
+        ):
+            result = fetch_linked_content(
+                "https://example.com/xhtml-body", resolve_redirects=False
+            )
+        assert result.ok
+        assert result.title == "XHTML"
+
+    def test_missing_content_type_header_fetches(self):
+        html = "<html><head><title>No CT</title></head><body><p>OK</p></body></html>"
+        resp = _mock_get_response(html)
+        resp.headers = {}
+        with patch("requests.get", return_value=resp):
+            result = fetch_linked_content(
+                "https://example.com/no-content-type", resolve_redirects=False
+            )
+        assert result.ok
+        assert result.title == "No CT"
+
+    @pytest.mark.mutmut_guard
+    def test_accepts_text_plain_content_type(self):
+        html = "<html><head><title>Plain</title></head><body><p>OK</p></body></html>"
+        with patch(
+            "requests.get",
+            return_value=_mock_get_response(html, content_type="text/plain"),
+        ):
+            result = fetch_linked_content(
+                "https://example.com/plain-body", resolve_redirects=False
+            )
+        assert result.ok
+        assert result.title == "Plain"
 
     def test_skips_pdf_document(self):
         """PDF URLs should be skipped without an HTTP fetch."""
         result = fetch_linked_content(
             "https://example.com/report.pdf", resolve_redirects=False
         )
-        assert "skipped" in result.error
+        assert result.error == "skipped (document)"
         assert result.ok is False
 
     def test_arxiv_pdf_fetches_html_page(self):
@@ -362,7 +504,7 @@ class TestShortUrlResolution:
                 "https://lnkd.in/erbBvi7E", resolve_redirects=True
             )
 
-        assert "skipped" in result.error
+        assert result.error == "skipped (image)"
         assert result.ok is False
 
     def test_failed_redirect_falls_back_gracefully(self):

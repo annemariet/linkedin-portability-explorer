@@ -109,6 +109,7 @@ python_files = [
 markers = [
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
+    "mutmut_guard: targeted tests for mutmut on media fetch guards",
 ]
 
 [tool.coverage.run]

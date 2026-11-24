@@ -145,11 +145,25 @@ class FetchResult:
         return bool((self.content or self.title) and not self.error)
 
 
-_BINARY_CONTENT_MARKERS = ("%PDF-", "\x89PNG")
+_BINARY_CONTENT_MARKERS = ("%PDF-", "\x89PNG", "JFIF", "GIF8")
 
 #: URL types that are always metadata-only (body extraction deferred), regardless
 #: of ``LINKEDIN_EXTRACTOR`` — no Tavily credits on YouTube / GitHub / podcasts.
 _METADATA_ONLY_URL_TYPES: frozenset[str] = frozenset({"video", "repository", "podcast"})
+
+
+def _text_looks_binary(text: str) -> bool:
+    if not text:
+        return False
+    if "\x00" in text:
+        return True
+    if any(text.startswith(marker) for marker in _BINARY_CONTENT_MARKERS):
+        return True
+    sample = text[:4096]
+    if not sample:
+        return False
+    non_printable = sum(1 for ch in sample if ch < " " and ch not in "\n\r\t")
+    return non_printable > max(8, len(sample) // 20)
 
 
 def is_exportable_resource(result: FetchResult) -> bool:
@@ -168,7 +182,7 @@ def is_exportable_resource(result: FetchResult) -> bool:
         return False
     body = (result.content or "").strip()
     title = (result.title or "").strip()
-    if body and any(body.startswith(marker) for marker in _BINARY_CONTENT_MARKERS):
+    if _text_looks_binary(body) or _text_looks_binary(title):
         return False
     if not body:
         return False
@@ -194,7 +208,25 @@ FetchStrategy = Callable[[str], tuple[str, str, list[str]]]  # (title, content, 
 
 
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2 MB — skip pathologically large pages
-_BINARY_PREFIXES = (b"%PDF-", b"\x89PNG\r\n", b"PK\x03\x04", b"\x1f\x8b\x08")
+_BINARY_PREFIXES = (
+    b"%PDF-",
+    b"\x89PNG\r\n",
+    b"PK\x03\x04",
+    b"\x1f\x8b\x08",
+    b"\xff\xd8\xff",
+    b"GIF87a",
+    b"GIF89a",
+)
+
+
+def _content_type_ok_for_html_fetch(media_type: str) -> bool:
+    """Allow HTML and other text/* responses; reject binary/media types.
+
+    ``media_type`` must be the primary MIME token only (lowercased, no parameters).
+    """
+    if media_type == "application/xhtml+xml":
+        return True
+    return media_type.startswith("text/")
 
 
 def _decode_response_bytes(raw: bytes, resp: requests.Response) -> str:
@@ -240,6 +272,12 @@ def _fetch_soup(
     )
     if resp.status_code >= 500:
         raise ValueError(f"HTTP {resp.status_code}")
+    content_type = (
+        (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+    )
+    if content_type and not _content_type_ok_for_html_fetch(content_type):
+        resp.close()
+        raise ValueError(f"non-text content-type ({content_type})")
     raw = b""
     for chunk in resp.iter_content(chunk_size=32768):
         raw += chunk
