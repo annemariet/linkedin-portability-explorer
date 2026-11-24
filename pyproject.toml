@@ -94,6 +94,7 @@ extend-exclude = '''
 )/
 '''
 
+
 [tool.pytest.ini_options]
 minversion = "6.0"
 addopts = "-ra -q --strict-markers --strict-config"
@@ -109,6 +110,7 @@ python_files = [
 markers = [
     "integration: marks tests as integration tests",
     "unit: marks tests as unit tests",
+    "mutmut_guard: targeted tests for mutmut on media fetch guards",
 ]
 
 [tool.coverage.run]

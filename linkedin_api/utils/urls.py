@@ -560,63 +560,18 @@ def is_x_status_url(url: str) -> bool:
     return x_status_id(url) is not None
 
 
-_LINKEDIN_MEDIA_CDN_HOSTS: frozenset[str] = frozenset(
-    {"media.licdn.com", "static.licdn.com"}
-)
-
-_MEDIA_URL_EXTENSIONS: frozenset[str] = frozenset(
-    {
-        "jpg",
-        "jpeg",
-        "jpe",
-        "jfif",
-        "png",
-        "gif",
-        "webp",
-        "bmp",
-        "ico",
-        "avif",
-        "heic",
-        "heif",
-        "svg",
-        "mp4",
-        "webm",
-        "mov",
-        "m4v",
-        "avi",
-        "mkv",
-        "mp3",
-        "m4a",
-        "wav",
-        "ogg",
-        "flac",
-        "aac",
-        "pdf",
-        "zip",
-        "gz",
-        "tar",
-        "bin",
-        "exe",
-        "dmg",
-        "iso",
-    }
-)
+_LICDN_DMS_MEDIA_PATH_RE = re.compile(r"/dms/(?:image|video)/", re.I)
 
 
-def url_path_extension(url: str) -> str:
-    """Lowercase path extension without query/fragment (empty when absent)."""
-    try:
-        path = urlparse((url or "").strip()).path or ""
-    except Exception:
-        return ""
-    base = path.rsplit("/", 1)[-1]
-    if "." not in base:
-        return ""
-    return base.rsplit(".", 1)[-1].lower()
+def _is_licdn_host(host: str) -> bool:
+    h = (host or "").lower()
+    if h.startswith("www."):
+        h = h[4:]
+    return h == "licdn.com" or h.endswith(".licdn.com")
 
 
 def is_media_resource_url(url: str) -> bool:
-    """True for LinkedIn CDN images and other non-article binary/media URLs."""
+    """True for LinkedIn CDN ``/dms/image`` or ``/dms/video`` URLs (not article links)."""
     raw = (url or "").strip()
     if not raw:
         return False
@@ -627,17 +582,12 @@ def is_media_resource_url(url: str) -> bool:
     try:
         parsed = urlparse(raw)
         host = (parsed.hostname or "").lower()
+        path = parsed.path or ""
     except Exception:
         return False
-    if host.startswith("www."):
-        host = host[4:]
-    if host in _LINKEDIN_MEDIA_CDN_HOSTS:
-        return True
-    path_lower = (parsed.path or "").lower()
-    if host.endswith(".licdn.com") and "/dms/" in path_lower:
-        return True
-    ext = url_path_extension(raw)
-    return bool(ext and ext in _MEDIA_URL_EXTENSIONS)
+    if not _is_licdn_host(host):
+        return False
+    return bool(_LICDN_DMS_MEDIA_PATH_RE.search(path))
 
 
 def should_ignore_url(url: str) -> bool:

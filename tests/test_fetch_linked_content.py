@@ -14,6 +14,7 @@ from linkedin_api.fetch_linked_content import (
     _fetch_tavily,
     _iter_posts_with_urls,
     _resource_dir,
+    _text_looks_binary,
     _tavily_api_key,
     _url_stem,
     fetch_linked_content,
@@ -69,6 +70,42 @@ class TestFetchResult:
         assert r.ok is False
 
 
+@pytest.mark.mutmut_guard
+class TestTextLooksBinary:
+    def test_empty_is_false(self) -> None:
+        assert _text_looks_binary("") is False
+
+    def test_plain_text_below_threshold(self) -> None:
+        body = "Article paragraph.\n" * 40
+        assert _text_looks_binary(body) is False
+
+    def test_jpeg_marker_in_title(self) -> None:
+        assert _text_looks_binary("JFIF\x00" + "x" * 200) is True
+
+    def test_gif_magic_bytes(self) -> None:
+        assert _text_looks_binary("GIF89a" + "x" * 200) is True
+
+    def test_non_printable_above_threshold(self) -> None:
+        sample = "a" * 200 + "\x01" * 12
+        assert _text_looks_binary(sample) is True
+
+    def test_non_printable_at_threshold_not_binary(self) -> None:
+        sample = "a" * 200 + "\x01" * 8
+        assert _text_looks_binary(sample) is False
+
+    def test_export_rejects_jfif_title_via_is_exportable(self) -> None:
+        assert (
+            is_exportable_resource(
+                FetchResult(
+                    url="https://example.com/x",
+                    title="JFIF bad",
+                    content="Enough body text here.\n" * 5,
+                )
+            )
+            is False
+        )
+
+
 # ---------------------------------------------------------------------------
 # fetch_linked_content — unit tests (HTTP mocked)
 # ---------------------------------------------------------------------------
@@ -104,9 +141,10 @@ class TestFetchLinkedContent:
         result = fetch_linked_content(
             "https://example.com/photo.png", resolve_redirects=False
         )
-        assert result.error in ("ignored",) or "skipped" in result.error
+        assert result.error == "skipped (image)"
         assert result.ok is False
 
+    @pytest.mark.mutmut_guard
     def test_skips_linkedin_feedshare_cdn_without_fetch(self):
         feedshare = (
             "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
@@ -118,6 +156,7 @@ class TestFetchLinkedContent:
         assert result.error == "ignored"
         assert result.ok is False
 
+    @pytest.mark.mutmut_guard
     def test_skips_non_html_content_type_even_for_article_url(self):
         html = (
             "<html><head><title>Never used</title></head><body><p>x</p></body></html>"
@@ -129,7 +168,7 @@ class TestFetchLinkedContent:
             )
         assert mock_get.called
         assert not result.ok
-        assert "non-html" in result.error
+        assert result.error.startswith("non-text content-type (image/jpeg)")
 
     def test_catalogs_normal_html_article(self):
         html = (
@@ -144,12 +183,25 @@ class TestFetchLinkedContent:
         assert result.title == "Datadog post"
         assert "Leadership notes" in result.content
 
+    @pytest.mark.mutmut_guard
+    def test_accepts_text_plain_content_type(self):
+        html = "<html><head><title>Plain</title></head><body><p>OK</p></body></html>"
+        with patch(
+            "requests.get",
+            return_value=_mock_get_response(html, content_type="text/plain"),
+        ):
+            result = fetch_linked_content(
+                "https://example.com/plain-body", resolve_redirects=False
+            )
+        assert result.ok
+        assert result.title == "Plain"
+
     def test_skips_pdf_document(self):
         """PDF URLs should be skipped without an HTTP fetch."""
         result = fetch_linked_content(
             "https://example.com/report.pdf", resolve_redirects=False
         )
-        assert result.error in ("ignored",) or "skipped" in result.error
+        assert result.error == "skipped (document)"
         assert result.ok is False
 
     def test_arxiv_pdf_fetches_html_page(self):
@@ -403,7 +455,7 @@ class TestShortUrlResolution:
                 "https://lnkd.in/erbBvi7E", resolve_redirects=True
             )
 
-        assert result.error in ("ignored",) or "skipped" in result.error
+        assert result.error == "skipped (image)"
         assert result.ok is False
 
     def test_failed_redirect_falls_back_gracefully(self):

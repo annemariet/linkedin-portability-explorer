@@ -218,7 +218,15 @@ _BINARY_PREFIXES = (
     b"GIF89a",
 )
 
-_HTML_CONTENT_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+
+def _content_type_ok_for_html_fetch(content_type: str) -> bool:
+    """Allow HTML and other text/* responses; reject binary/media types."""
+    ct = (content_type or "").split(";", 1)[0].strip().lower()
+    if not ct:
+        return True
+    if ct == "application/xhtml+xml":
+        return True
+    return ct.startswith("text/")
 
 
 def _decode_response_bytes(raw: bytes, resp: requests.Response) -> str:
@@ -267,9 +275,9 @@ def _fetch_soup(
     content_type = (
         (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
     )
-    if content_type and content_type not in _HTML_CONTENT_TYPES:
+    if content_type and not _content_type_ok_for_html_fetch(content_type):
         resp.close()
-        raise ValueError(f"non-html content-type ({content_type})")
+        raise ValueError(f"non-text content-type ({content_type})")
     raw = b""
     for chunk in resp.iter_content(chunk_size=32768):
         raw += chunk
