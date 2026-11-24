@@ -31,14 +31,18 @@ def use_tmp_data_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
 
 
-def _mock_get_response(html: str, status_code: int = 200) -> MagicMock:
+def _mock_get_response(
+    html: str, status_code: int = 200, *, content_type: str = "text/html"
+) -> MagicMock:
     """Build a requests.get mock that supports iter_content (streaming)."""
     resp = MagicMock()
     resp.status_code = status_code
     resp.encoding = "utf-8"
     resp.text = html  # kept for tests that still read .text directly
+    resp.headers = {"Content-Type": content_type}
     raw = html.encode("utf-8")
     resp.iter_content.return_value = iter([raw])
+    resp.close = MagicMock()
     return resp
 
 
@@ -100,15 +104,50 @@ class TestFetchLinkedContent:
         result = fetch_linked_content(
             "https://example.com/photo.png", resolve_redirects=False
         )
-        assert "skipped" in result.error
+        assert result.error in ("ignored",) or "skipped" in result.error
         assert result.ok is False
+
+    def test_skips_linkedin_feedshare_cdn_without_fetch(self):
+        feedshare = (
+            "https://media.licdn.com/dms/image/v2/example/feedshare-shrink_800/0"
+            "?e=2147483647&t=signed"
+        )
+        with patch("requests.get") as mock_get:
+            result = fetch_linked_content(feedshare, resolve_redirects=False)
+        mock_get.assert_not_called()
+        assert result.error == "ignored"
+        assert result.ok is False
+
+    def test_skips_non_html_content_type_even_for_article_url(self):
+        html = "<html><head><title>Never used</title></head><body><p>x</p></body></html>"
+        resp = _mock_get_response(html, content_type="image/jpeg")
+        with patch("requests.get", return_value=resp) as mock_get:
+            result = fetch_linked_content(
+                "https://example.com/looks-like-article", resolve_redirects=False
+            )
+        assert mock_get.called
+        assert not result.ok
+        assert "non-html" in result.error
+
+    def test_catalogs_normal_html_article(self):
+        html = (
+            "<html><head><title>Datadog post</title></head>"
+            "<body><p>" + ("Leadership notes. " * 30) + "</p></body></html>"
+        )
+        with patch("requests.get", return_value=_mock_get_response(html)):
+            result = fetch_linked_content(
+                "https://example.com/datadog-leadership", resolve_redirects=False
+            )
+        assert result.ok
+        assert result.title == "Datadog post"
+        assert "Leadership notes" in result.content
 
     def test_skips_pdf_document(self):
         """PDF URLs should be skipped without an HTTP fetch."""
         result = fetch_linked_content(
             "https://example.com/report.pdf", resolve_redirects=False
         )
-        assert "skipped" in result.error
+        assert result.error in ("ignored",) or "skipped" in result.error
         assert result.ok is False
 
     def test_arxiv_pdf_fetches_html_page(self):
@@ -362,7 +401,7 @@ class TestShortUrlResolution:
                 "https://lnkd.in/erbBvi7E", resolve_redirects=True
             )
 
-        assert "skipped" in result.error
+        assert result.error in ("ignored",) or "skipped" in result.error
         assert result.ok is False
 
     def test_failed_redirect_falls_back_gracefully(self):
